@@ -87,7 +87,7 @@ jobs:
 
       - name: Prepare local dependency stubs
         run: |
-          mkdir -p ../woocommerce-pos ../woocommerce-pos-pro
+          mkdir -p ../woocommerce-pos ../woocommerce-pos-pro ../atum-multi-inventory
 
           if [ ! -f ../woocommerce-pos/woocommerce-pos.php ]; then
             printf '%s\n' '<?php' '/**' ' * Plugin Name: WCPOS (Stub)' ' */' > ../woocommerce-pos/woocommerce-pos.php
@@ -95,6 +95,10 @@ jobs:
 
           if [ ! -f ../woocommerce-pos-pro/woocommerce-pos-pro.php ]; then
             printf '%s\n' '<?php' '/**' ' * Plugin Name: WCPOS Pro (Stub)' ' */' > ../woocommerce-pos-pro/woocommerce-pos-pro.php
+          fi
+
+          if [ ! -f ../atum-multi-inventory/atum-multi-inventory.php ]; then
+            printf '%s\n' '<?php' '/**' ' * Plugin Name: ATUM Multi-Inventory (Stub)' ' */' > ../atum-multi-inventory/atum-multi-inventory.php
           fi
 
       - name: Override WooCommerce version

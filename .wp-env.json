@@ -5,6 +5,7 @@
     "https://downloads.wordpress.org/plugin/atum-stock-manager-for-woocommerce.zip",
     "../woocommerce-pos",
     "../woocommerce-pos-pro",
+    "../atum-multi-inventory",
     "."
   ],
   "config": {
