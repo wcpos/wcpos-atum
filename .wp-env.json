@@ -1,0 +1,15 @@
+{
+  "core": null,
+  "plugins": [
+    "https://downloads.wordpress.org/plugin/woocommerce.zip",
+    "https://downloads.wordpress.org/plugin/atum-stock-manager-for-woocommerce.zip",
+    "../woocommerce-pos",
+    "../woocommerce-pos-pro",
+    "."
+  ],
+  "config": {
+    "WP_DEBUG": true,
+    "SCRIPT_DEBUG": true,
+    "WP_PHP_BINARY": "php"
+  }
+}
