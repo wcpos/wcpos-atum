@@ -9,17 +9,24 @@ namespace WCPOS\ATUM;
 
 use WCPOS\WooCommercePOSPro\Services\Stores as WCPOS_Pro_Stores;
 
+/**
+ * Main plugin class handling ATUM Multi-Inventory integration with WCPOS.
+ */
 class Plugin {
 	public const STORE_LOCATION_META_KEY  = '_wcpos_atum_inventory_location';
 	public const STORE_PRICING_SOURCE_KEY = '_wcpos_pricing_source';
 	public const STORE_SKU_OVERRIDE_KEY   = '_wcpos_atum_sku_override';
 
 	/**
+	 * Singleton instance.
+	 *
 	 * @var self|null
 	 */
 	private static $instance = null;
 
 	/**
+	 * Get the singleton instance.
+	 *
 	 * @return self
 	 */
 	public static function instance(): self {
@@ -56,9 +63,9 @@ class Plugin {
 	/**
 	 * Extend WCPOS Pro store meta field mappings.
 	 *
-	 * @param array $fields
+	 * @param array $fields Existing store meta field mappings.
 	 *
-	 * @return array
+	 * @return array Modified field mappings.
 	 */
 	public function extend_store_meta_fields( array $fields ): array {
 		if ( ! $this->is_atum_mi_supported() ) {
@@ -75,11 +82,11 @@ class Plugin {
 	/**
 	 * Inject ATUM fields into WCPOS stores API responses.
 	 *
-	 * @param mixed            $result
-	 * @param \WP_REST_Server  $server
-	 * @param \WP_REST_Request $request
+	 * @param mixed            $result  The REST response.
+	 * @param \WP_REST_Server  $server  The REST server instance.
+	 * @param \WP_REST_Request $request The current request.
 	 *
-	 * @return mixed
+	 * @return mixed Modified response.
 	 */
 	public function inject_store_atum_fields( $result, $server, \WP_REST_Request $request ) {
 		if ( ! $this->is_atum_mi_supported() ) {
@@ -114,24 +121,27 @@ class Plugin {
 	/**
 	 * Add ATUM fields to a single store data array.
 	 *
-	 * @param array $store_data
+	 * @param array $store_data Store data array from the REST response.
 	 *
-	 * @return array
+	 * @return array Store data with ATUM fields added.
 	 */
 	private function add_atum_fields_to_store( array $store_data ): array {
 		$store_id = (int) $store_data['id'];
 
 		$store_data['atum_inventory_location'] = (int) get_post_meta( $store_id, self::STORE_LOCATION_META_KEY, true );
-		$store_data['pricing_source']          = get_post_meta( $store_id, self::STORE_PRICING_SOURCE_KEY, true ) ?: 'default';
+		$pricing_source                        = get_post_meta( $store_id, self::STORE_PRICING_SOURCE_KEY, true );
+		$store_data['pricing_source']          = $pricing_source ? $pricing_source : 'default';
 		$store_data['atum_sku_override']       = (string) get_post_meta( $store_id, self::STORE_SKU_OVERRIDE_KEY, true );
 
 		return $store_data;
 	}
 
 	/**
-	 * @param mixed $items
+	 * Check whether an array is a sequential list (0-indexed).
 	 *
-	 * @return bool
+	 * @param mixed $items Value to check.
+	 *
+	 * @return bool True if the array is a sequential list.
 	 */
 	private function is_list_array( $items ): bool {
 		if ( ! is_array( $items ) ) {
@@ -154,11 +164,11 @@ class Plugin {
 	 *
 	 * Runs at priority 20, after WCPOS Pro's per-store pricing (priority 10).
 	 *
-	 * @param \WP_REST_Response $response
-	 * @param \WC_Product       $product
-	 * @param \WP_REST_Request  $request
+	 * @param \WP_REST_Response $response The product REST response.
+	 * @param \WC_Product       $product  The product object.
+	 * @param \WP_REST_Request  $request  The current request.
 	 *
-	 * @return \WP_REST_Response
+	 * @return \WP_REST_Response Modified response with ATUM data.
 	 */
 	public function inject_atum_product_data( \WP_REST_Response $response, $product, \WP_REST_Request $request ): \WP_REST_Response {
 		if ( ! $this->is_atum_mi_supported() ) {
@@ -235,8 +245,9 @@ class Plugin {
 	public function get_inventory_for_product_at_location( int $product_id, int $location_term_id ): ?array {
 		global $wpdb;
 
-		$inventory_id = (int) $wpdb->get_var( $wpdb->prepare(
-			"SELECT i.id
+		$inventory_id = (int) $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT i.id
 			FROM {$wpdb->prefix}atum_inventories i
 			INNER JOIN {$wpdb->prefix}atum_inventory_locations il ON i.id = il.inventory_id
 			INNER JOIN {$wpdb->term_taxonomy} tt ON il.term_taxonomy_id = tt.term_taxonomy_id
@@ -244,20 +255,23 @@ class Plugin {
 			AND tt.term_id = %d
 			AND tt.taxonomy = 'atum_location'
 			LIMIT 1",
-			$product_id,
-			$location_term_id
-		) );
+				$product_id,
+				$location_term_id
+			)
+		);
 
 		if ( $inventory_id <= 0 ) {
 			return null;
 		}
 
-		$meta_rows = $wpdb->get_results( $wpdb->prepare(
-			"SELECT meta_key, meta_value
+		$meta_rows = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT meta_key, meta_value
 			FROM {$wpdb->prefix}atum_inventory_meta
 			WHERE inventory_id = %d",
-			$inventory_id
-		) );
+				$inventory_id
+			)
+		);
 
 		if ( empty( $meta_rows ) ) {
 			return null;
@@ -274,10 +288,10 @@ class Plugin {
 	/**
 	 * Prevent ATUM's default allocation for POS orders that have a store with an ATUM location.
 	 *
-	 * @param bool $can_reduce
-	 * @param mixed $order
+	 * @param bool  $can_reduce Whether ATUM can reduce stock.
+	 * @param mixed $order      The WooCommerce order.
 	 *
-	 * @return bool
+	 * @return bool False if the POS store has a mapped ATUM location.
 	 */
 	public function maybe_block_atum_reduction( bool $can_reduce, $order ): bool {
 		if ( ! $can_reduce ) {
@@ -304,10 +318,10 @@ class Plugin {
 	/**
 	 * Reduce stock at the store's ATUM inventory location for POS orders.
 	 *
-	 * @param int    $order_id
-	 * @param string $old_status
-	 * @param string $new_status
-	 * @param mixed  $order
+	 * @param int    $order_id   The order ID.
+	 * @param string $old_status Previous order status.
+	 * @param string $new_status New order status.
+	 * @param mixed  $order      The WooCommerce order.
 	 */
 	public function maybe_reduce_pos_order_stock( int $order_id, string $old_status, string $new_status, $order ): void {
 		if ( ! $this->is_atum_mi_supported() ) {
@@ -342,10 +356,10 @@ class Plugin {
 	/**
 	 * Restore stock to the originating ATUM inventory location on refund/cancel.
 	 *
-	 * @param int    $order_id
-	 * @param string $old_status
-	 * @param string $new_status
-	 * @param mixed  $order
+	 * @param int    $order_id   The order ID.
+	 * @param string $old_status Previous order status.
+	 * @param string $new_status New order status.
+	 * @param mixed  $order      The WooCommerce order.
 	 */
 	public function maybe_restore_pos_order_stock( int $order_id, string $old_status, string $new_status, $order ): void {
 		if ( ! $this->is_atum_mi_supported() ) {
@@ -384,14 +398,15 @@ class Plugin {
 	/**
 	 * Reduce stock for each order line item at the specified ATUM location.
 	 *
-	 * @param mixed $order
-	 * @param int   $location_term_id
+	 * @param mixed $order            The WooCommerce order.
+	 * @param int   $location_term_id ATUM location term ID.
 	 */
 	private function reduce_order_stock_at_location( $order, int $location_term_id ): void {
 		global $wpdb;
 
 		foreach ( $order->get_items() as $item ) {
-			$product_id = $item->get_variation_id() ?: $item->get_product_id();
+			$variation_id = $item->get_variation_id();
+			$product_id   = $variation_id ? $variation_id : $item->get_product_id();
 			$qty        = $item->get_quantity();
 
 			if ( $qty <= 0 ) {
@@ -434,7 +449,7 @@ class Plugin {
 	/**
 	 * Restore stock using atum_inventory_orders records to find the originating inventory.
 	 *
-	 * @param mixed $order
+	 * @param mixed $order The WooCommerce order.
 	 */
 	private function restore_order_stock_from_atum_records( $order ): void {
 		global $wpdb;
@@ -442,11 +457,13 @@ class Plugin {
 		foreach ( $order->get_items() as $item ) {
 			$order_item_id = $item->get_id();
 
-			$records = $wpdb->get_results( $wpdb->prepare(
-				"SELECT inventory_id, qty FROM {$wpdb->prefix}atum_inventory_orders
+			$records = $wpdb->get_results(
+				$wpdb->prepare(
+					"SELECT inventory_id, qty FROM {$wpdb->prefix}atum_inventory_orders
 				WHERE order_item_id = %d AND order_type = 1",
-				$order_item_id
-			) );
+					$order_item_id
+				)
+			);
 
 			if ( empty( $records ) ) {
 				continue;
@@ -456,11 +473,13 @@ class Plugin {
 				$inventory_id = (int) $record->inventory_id;
 				$qty          = (float) $record->qty;
 
-				$current_stock = (float) $wpdb->get_var( $wpdb->prepare(
-					"SELECT meta_value FROM {$wpdb->prefix}atum_inventory_meta
+				$current_stock = (float) $wpdb->get_var(
+					$wpdb->prepare(
+						"SELECT meta_value FROM {$wpdb->prefix}atum_inventory_meta
 					WHERE inventory_id = %d AND meta_key = 'stock_quantity'",
-					$inventory_id
-				) );
+						$inventory_id
+					)
+				);
 
 				$new_stock = $current_stock + $qty;
 
@@ -479,7 +498,7 @@ class Plugin {
 	/**
 	 * Enqueue WCPOS Pro store edit extension script.
 	 *
-	 * @param string $hook_suffix
+	 * @param string $hook_suffix The current admin page hook suffix.
 	 */
 	public function enqueue_store_edit_assets( string $hook_suffix ): void {
 		if ( ! $this->is_atum_mi_supported() ) {
@@ -540,10 +559,12 @@ class Plugin {
 	 * @return array
 	 */
 	private function get_atum_locations_for_js(): array {
-		$terms = get_terms( array(
-			'taxonomy'   => 'atum_location',
-			'hide_empty' => false,
-		) );
+		$terms = get_terms(
+			array(
+				'taxonomy'   => 'atum_location',
+				'hide_empty' => false,
+			)
+		);
 
 		if ( is_wp_error( $terms ) || empty( $terms ) ) {
 			return array();
@@ -563,9 +584,9 @@ class Plugin {
 	/**
 	 * Check if request is a WCPOS route.
 	 *
-	 * @param \WP_REST_Request $request
+	 * @param \WP_REST_Request $request The current REST request.
 	 *
-	 * @return bool
+	 * @return bool True if this is a WCPOS API route.
 	 */
 	private function is_wcpos_route( \WP_REST_Request $request ): bool {
 		return 0 === strpos( $request->get_route(), '/wcpos/v1/' );

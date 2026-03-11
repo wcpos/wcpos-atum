@@ -6,6 +6,8 @@
  * Author: kilbot
  * Requires Plugins: woocommerce, atum-stock-manager-for-woocommerce, atum-multi-inventory
  * Text Domain: wcpos-atum
+ *
+ * @package WCPOS\ATUM
  */
 
 namespace WCPOS\ATUM;
