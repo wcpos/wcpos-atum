@@ -43,6 +43,7 @@ class Plugin {
 		add_filter( 'atum/multi_inventory/can_restore_order_stock', array( $this, 'maybe_block_atum_reduction' ), 10, 2 );
 		add_action( 'woocommerce_order_status_changed', array( $this, 'maybe_reduce_pos_order_stock' ), 100, 4 );
 		add_action( 'woocommerce_order_status_changed', array( $this, 'maybe_restore_pos_order_stock' ), 100, 4 );
+		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_store_edit_assets' ), 20 );
 	}
 
 	/**
@@ -473,6 +474,90 @@ class Plugin {
 				);
 			}
 		}
+	}
+
+	/**
+	 * Enqueue WCPOS Pro store edit extension script.
+	 *
+	 * @param string $hook_suffix
+	 */
+	public function enqueue_store_edit_assets( string $hook_suffix ): void {
+		if ( ! $this->is_atum_mi_supported() ) {
+			return;
+		}
+
+		if ( 'admin_page_wcpos-store-edit' !== $hook_suffix ) {
+			return;
+		}
+
+		if ( ! class_exists( WCPOS_Pro_Stores::class ) ) {
+			return;
+		}
+
+		$pro_store_edit_handle = 'woocommerce-pos-pro-store-edit';
+		if ( ! wp_script_is( $pro_store_edit_handle, 'enqueued' ) ) {
+			return;
+		}
+
+		$locations = $this->get_atum_locations_for_js();
+
+		wp_enqueue_script(
+			'wcpos-atum-store-edit',
+			plugins_url( 'assets/js/store-atum-section.js', dirname( __DIR__ ) . '/wcpos-atum.php' ),
+			array( $pro_store_edit_handle, 'wp-element' ),
+			VERSION,
+			true
+		);
+
+		wp_add_inline_script(
+			'wcpos-atum-store-edit',
+			'window.wcposAtumStoreEdit = ' . wp_json_encode(
+				array(
+					'locations' => $locations,
+					'strings'   => array(
+						'sectionLabel'        => __( 'ATUM Inventory', 'wcpos-atum' ),
+						'locationTitle'       => __( 'Inventory location', 'wcpos-atum' ),
+						'locationDescription' => __( 'Link this store to an ATUM inventory location.', 'wcpos-atum' ),
+						'locationDefault'     => __( 'No location (use default stock)', 'wcpos-atum' ),
+						'noLocations'         => __( 'No ATUM locations found. Create locations in ATUM settings.', 'wcpos-atum' ),
+						'pricingTitle'        => __( 'Pricing source', 'wcpos-atum' ),
+						'pricingDescription'  => __( 'Choose which pricing system this store uses.', 'wcpos-atum' ),
+						'pricingDefault'      => __( 'Default (WooCommerce prices)', 'wcpos-atum' ),
+						'pricingPro'          => __( 'WCPOS Pro (per-store pricing)', 'wcpos-atum' ),
+						'pricingAtum'         => __( 'ATUM (per-inventory pricing)', 'wcpos-atum' ),
+						'skuTitle'            => __( 'SKU override', 'wcpos-atum' ),
+						'skuLabel'            => __( 'Use location-specific SKUs from ATUM', 'wcpos-atum' ),
+					),
+				)
+			) . ';',
+			'before'
+		);
+	}
+
+	/**
+	 * Get ATUM locations for the store editor dropdown.
+	 *
+	 * @return array
+	 */
+	private function get_atum_locations_for_js(): array {
+		$terms = get_terms( array(
+			'taxonomy'   => 'atum_location',
+			'hide_empty' => false,
+		) );
+
+		if ( is_wp_error( $terms ) || empty( $terms ) ) {
+			return array();
+		}
+
+		$options = array();
+		foreach ( $terms as $term ) {
+			$options[] = array(
+				'value' => $term->term_id,
+				'label' => $term->name,
+			);
+		}
+
+		return $options;
 	}
 
 	/**
