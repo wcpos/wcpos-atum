@@ -1,0 +1,64 @@
+<?xml version="1.0"?>
+<ruleset xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" name="WCPOS ATUM" xsi:noNamespaceSchemaLocation="https://raw.githubusercontent.com/squizlabs/PHP_CodeSniffer/master/phpcs.xsd">
+	<description>Coding standards for wcpos-atum plugin.</description>
+
+	<!-- What to scan -->
+	<file>wcpos-atum.php</file>
+	<file>includes/</file>
+
+	<!-- Sniff PHP -->
+	<arg name="extensions" value="php/PHP"/>
+
+	<!-- Show sniff codes in all reports, and progress when running -->
+	<arg value="snp"/>
+	<arg name="colors"/>
+	<arg name="basepath" value="."/>
+	<arg name="parallel" value="8"/>
+
+	<!-- Exclude paths -->
+	<exclude-pattern>*/vendor/*</exclude-pattern>
+	<exclude-pattern>*/node_modules/*</exclude-pattern>
+
+	<config name="minimum_supported_wp_version" value="5.9"/>
+	<config name="testVersion" value="7.4-"/>
+
+	<!-- Include the WordPress-Extra standard -->
+	<rule ref="WordPress-Extra">
+		<exclude name="WordPress.Files.FileName.NotHyphenatedLowercase"/>
+	</rule>
+
+	<!-- Documentation -->
+	<rule ref="WordPress-Docs"/>
+
+	<!-- File naming -->
+	<rule ref="WordPress.Files.FileName">
+		<properties>
+			<property name="strict_class_file_names" value="false"/>
+		</properties>
+	</rule>
+
+	<!-- Prefix all globals -->
+	<rule ref="WordPress.NamingConventions.PrefixAllGlobals">
+		<properties>
+			<property name="prefixes" type="array">
+				<element value="wcpos_atum_"/>
+				<element value="WCPOS\ATUM"/>
+			</property>
+		</properties>
+	</rule>
+
+	<!-- Translations -->
+	<rule ref="WordPress.WP.I18n">
+		<properties>
+			<property name="text_domain" type="array">
+				<element value="wcpos-atum"/>
+			</property>
+		</properties>
+	</rule>
+
+	<!-- Allow direct DB queries (needed for ATUM custom tables) -->
+	<rule ref="WordPress.DB.DirectDatabaseQuery">
+		<exclude name="WordPress.DB.DirectDatabaseQuery.DirectQuery"/>
+		<exclude name="WordPress.DB.DirectDatabaseQuery.NoCaching"/>
+	</rule>
+</ruleset>

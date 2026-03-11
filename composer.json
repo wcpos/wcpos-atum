@@ -13,7 +13,9 @@
     "wp-coding-standards/wpcs": "^3.3"
   },
   "scripts": {
-    "lint": "phpcs --standard=WordPress-Extra wcpos-atum.php includes tests",
+    "lint": "phpcs --standard=./.phpcs.xml.dist",
+    "lint:report": "phpcs --standard=./.phpcs.xml.dist --report=checkstyle",
+    "fix": "phpcbf --standard=./.phpcs.xml.dist",
     "test": "vendor/bin/phpunit -c phpunit.xml.dist"
   },
   "config": {

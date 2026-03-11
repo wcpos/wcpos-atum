@@ -1,4 +1,7 @@
 /vendor/
 /node_modules/
 composer.lock
+pnpm-lock.yaml
 /.worktrees/
+.phpunit.result.cache
+/dist/

@@ -1,0 +1,14 @@
+{
+  "name": "wcpos-atum",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "wp-env": "wp-env",
+    "pretest": "wp-env start && wp-env run tests-cli --env-cwd='wp-content/plugins/wcpos-atum' -- composer install",
+    "test": "wp-env run tests-cli --env-cwd='wp-content/plugins/wcpos-atum' -- vendor/bin/phpunit -c phpunit.xml.dist",
+    "lint": "wp-env run tests-cli --env-cwd='wp-content/plugins/wcpos-atum' -- composer run lint"
+  },
+  "devDependencies": {
+    "@wordpress/env": "^10.39.0"
+  }
+}

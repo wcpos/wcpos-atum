@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          tools: composer
+
+      - name: Check if version has changed
+        id: check_version
+        run: |
+          VERSION=$(grep -oP "Version:\s*\K\d+(\.\d+)*" wcpos-atum.php | head -n 1)
+          if [ -z "$VERSION" ]; then
+            echo "Could not find plugin version in wcpos-atum.php"
+            exit 1
+          fi
+
+          git fetch --tags --force
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          if git tag --list "v$VERSION" | grep -q .; then
+            echo "Version has not changed. Skipping release..."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Version has changed. Creating new release..."
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install composer dependencies
+        if: steps.check_version.outputs.release == 'true'
+        run: composer install --no-dev --optimize-autoloader
+
+      - name: Build ZIP
+        if: steps.check_version.outputs.release == 'true'
+        run: |
+          rm -rf dist wcpos-atum.zip
+          mkdir -p dist/wcpos-atum
+
+          rsync -a ./ dist/wcpos-atum/ \
+            --exclude '.git*' \
+            --exclude '.github/' \
+            --exclude 'node_modules/' \
+            --exclude 'tests/' \
+            --exclude 'vendor/' \
+            --exclude 'docs/' \
+            --exclude '.wp-env.json' \
+            --exclude '.phpcs.xml.dist' \
+            --exclude 'phpunit.xml.dist' \
+            --exclude '.phpunit.result.cache' \
+            --exclude '.editorconfig' \
+            --exclude 'composer.json' \
+            --exclude 'composer.lock' \
+            --exclude 'package.json' \
+            --exclude 'pnpm-lock.yaml' \
+            --exclude 'dist/'
+
+          cd dist
+          zip -r ../wcpos-atum.zip wcpos-atum
+
+      - name: Create release and upload ZIP
+        if: steps.check_version.outputs.release == 'true'
+        run: |
+          gh release create "v${{ steps.check_version.outputs.version }}" \
+            wcpos-atum.zip \
+            --title "Release v${{ steps.check_version.outputs.version }}" \
+            --notes "Automated release for version ${{ steps.check_version.outputs.version }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

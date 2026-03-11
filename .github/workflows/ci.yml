@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (PHPCS)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          tools: composer
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: composer-${{ hashFiles('composer.lock') }}
+          restore-keys: composer-
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Run PHPCS
+        run: composer run lint
+
+  test:
+    name: Tests (PHP ${{ matrix.php }}, WP ${{ matrix.wp }}, WC ${{ matrix.wc }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: lint
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - php: '7.4'
+            wp: '6.7'
+            wc: '9.5.2'
+          - php: '8.2'
+            wp: '6.9'
+            wc: '10.4.3'
+          - php: '8.4'
+            wp: 'latest'
+            wc: 'latest'
+            experimental: true
+
+    continue-on-error: ${{ matrix.experimental || false }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install Node dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare local dependency stubs
+        run: |
+          mkdir -p ../woocommerce-pos ../woocommerce-pos-pro
+
+          if [ ! -f ../woocommerce-pos/woocommerce-pos.php ]; then
+            printf '%s\n' '<?php' '/**' ' * Plugin Name: WCPOS (Stub)' ' */' > ../woocommerce-pos/woocommerce-pos.php
+          fi
+
+          if [ ! -f ../woocommerce-pos-pro/woocommerce-pos-pro.php ]; then
+            printf '%s\n' '<?php' '/**' ' * Plugin Name: WCPOS Pro (Stub)' ' */' > ../woocommerce-pos-pro/woocommerce-pos-pro.php
+          fi
+
+      - name: Override WooCommerce version
+        if: matrix.wc != 'latest'
+        run: |
+          jq '.plugins[0] = "https://downloads.wordpress.org/plugin/woocommerce.${{ matrix.wc }}.zip"' .wp-env.json > .wp-env.tmp.json
+          mv .wp-env.tmp.json .wp-env.json
+
+      - name: Override WordPress version
+        if: matrix.wp != 'latest'
+        run: |
+          jq '.core = "WordPress/WordPress#${{ matrix.wp }}"' .wp-env.json > .wp-env.tmp.json
+          mv .wp-env.tmp.json .wp-env.json
+
+      - name: Override PHP version
+        if: matrix.php != '8.2'
+        run: |
+          jq '.phpVersion = "${{ matrix.php }}"' .wp-env.json > .wp-env.tmp.json
+          mv .wp-env.tmp.json .wp-env.json
+
+      - name: Start wp-env
+        run: pnpm wp-env start --update
+        timeout-minutes: 5
+
+      - name: Install Composer dependencies in wp-env
+        run: pnpm wp-env run tests-cli --env-cwd='wp-content/plugins/wcpos-atum' -- composer install --no-interaction
+
+      - name: Run PHPUnit
+        run: pnpm wp-env run tests-cli --env-cwd='wp-content/plugins/wcpos-atum' -- vendor/bin/phpunit -c phpunit.xml.dist --verbose
+
+      - name: Stop wp-env
+        if: always()
+        run: pnpm wp-env stop
