@@ -323,6 +323,160 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 		$this->assertSame( 'outofstock', $data['stock_status'] );
 	}
 
+	// ---- Stock Deduction Tests ----
+
+	public function test_atum_stock_reduction_blocked_for_pos_orders_with_location(): void {
+		add_filter( 'wcpos_atum_is_supported', '__return_true' );
+		$this->create_atum_tables();
+
+		if ( ! taxonomy_exists( 'atum_location' ) ) {
+			register_taxonomy( 'atum_location', 'product', array( 'hierarchical' => true ) );
+		}
+
+		$store_id = wp_insert_post( array(
+			'post_type'   => 'wcpos_store',
+			'post_status' => 'publish',
+			'post_title'  => 'Deduction Store',
+		) );
+		$term = wp_insert_term( 'Deduction Location', 'atum_location' );
+		update_post_meta( $store_id, '_wcpos_atum_inventory_location', $term['term_id'] );
+
+		$order = wc_create_order();
+		$order->update_meta_data( '_pos_store', $store_id );
+		$order->save();
+
+		$can_reduce = apply_filters( 'atum/multi_inventory/can_reduce_order_stock', true, $order );
+		$this->assertFalse( $can_reduce );
+	}
+
+	public function test_atum_stock_reduction_not_blocked_for_non_pos_orders(): void {
+		add_filter( 'wcpos_atum_is_supported', '__return_true' );
+
+		$order = wc_create_order();
+		$order->save();
+
+		$can_reduce = apply_filters( 'atum/multi_inventory/can_reduce_order_stock', true, $order );
+		$this->assertTrue( $can_reduce );
+	}
+
+	public function test_pos_order_reduces_stock_at_correct_atum_location(): void {
+		add_filter( 'wcpos_atum_is_supported', '__return_true' );
+		$this->create_atum_tables();
+
+		if ( ! taxonomy_exists( 'atum_location' ) ) {
+			register_taxonomy( 'atum_location', 'product', array( 'hierarchical' => true ) );
+		}
+
+		$store_id = wp_insert_post( array(
+			'post_type'   => 'wcpos_store',
+			'post_status' => 'publish',
+			'post_title'  => 'Stock Store',
+		) );
+		$term = wp_insert_term( 'Stock Location', 'atum_location' );
+		update_post_meta( $store_id, '_wcpos_atum_inventory_location', $term['term_id'] );
+
+		$product = new \WC_Product_Simple();
+		$product->set_name( 'Stock Test Product' );
+		$product->set_manage_stock( true );
+		$product->set_stock_quantity( 100 );
+		$product->set_regular_price( '10.00' );
+		$product->save();
+
+		$inventory_id = $this->create_test_inventory( $product->get_id(), $term['term_id'], array(
+			'stock_quantity' => '20',
+		) );
+
+		$order = wc_create_order();
+		$order->update_meta_data( '_pos_store', $store_id );
+		$order->add_product( $product, 3 );
+		$order->save();
+
+		$plugin = \WCPOS\ATUM\Plugin::instance();
+		$plugin->maybe_reduce_pos_order_stock( $order->get_id(), 'pending', 'processing', $order );
+
+		global $wpdb;
+		$new_stock = $wpdb->get_var( $wpdb->prepare(
+			"SELECT meta_value FROM {$wpdb->prefix}atum_inventory_meta WHERE inventory_id = %d AND meta_key = 'stock_quantity'",
+			$inventory_id
+		) );
+		$this->assertSame( '17', $new_stock );
+
+		$order_items   = $order->get_items();
+		$order_item    = reset( $order_items );
+		$order_item_id = $order_item->get_id();
+
+		$inventory_order = $wpdb->get_row( $wpdb->prepare(
+			"SELECT * FROM {$wpdb->prefix}atum_inventory_orders WHERE order_item_id = %d AND inventory_id = %d",
+			$order_item_id,
+			$inventory_id
+		) );
+		$this->assertNotNull( $inventory_order );
+		$this->assertEquals( 3, $inventory_order->qty );
+	}
+
+	// ---- Stock Restoration Tests ----
+
+	public function test_refund_restores_stock_to_originating_atum_location(): void {
+		add_filter( 'wcpos_atum_is_supported', '__return_true' );
+		$this->create_atum_tables();
+
+		if ( ! taxonomy_exists( 'atum_location' ) ) {
+			register_taxonomy( 'atum_location', 'product', array( 'hierarchical' => true ) );
+		}
+
+		$store_id = wp_insert_post( array(
+			'post_type'   => 'wcpos_store',
+			'post_status' => 'publish',
+			'post_title'  => 'Refund Store',
+		) );
+		$term = wp_insert_term( 'Refund Location', 'atum_location' );
+		update_post_meta( $store_id, '_wcpos_atum_inventory_location', $term['term_id'] );
+
+		$product = new \WC_Product_Simple();
+		$product->set_name( 'Refund Product' );
+		$product->set_manage_stock( true );
+		$product->set_stock_quantity( 100 );
+		$product->set_regular_price( '10.00' );
+		$product->save();
+
+		$inventory_id = $this->create_test_inventory( $product->get_id(), $term['term_id'], array(
+			'stock_quantity' => '17',
+		) );
+
+		$order = wc_create_order();
+		$order->update_meta_data( '_pos_store', $store_id );
+		$order->update_meta_data( '_wcpos_atum_stock_reduced', 'yes' );
+		$order->add_product( $product, 3 );
+		$order->save();
+
+		$order_items   = $order->get_items();
+		$order_item    = reset( $order_items );
+		$order_item_id = $order_item->get_id();
+
+		global $wpdb;
+		$wpdb->insert(
+			"{$wpdb->prefix}atum_inventory_orders",
+			array(
+				'order_item_id' => $order_item_id,
+				'inventory_id'  => $inventory_id,
+				'product_id'    => $product->get_id(),
+				'order_type'    => 1,
+				'qty'           => 3,
+				'subtotal'      => 30.00,
+				'total'         => 30.00,
+			)
+		);
+
+		$plugin = \WCPOS\ATUM\Plugin::instance();
+		$plugin->maybe_restore_pos_order_stock( $order->get_id(), 'processing', 'refunded', $order );
+
+		$new_stock = $wpdb->get_var( $wpdb->prepare(
+			"SELECT meta_value FROM {$wpdb->prefix}atum_inventory_meta WHERE inventory_id = %d AND meta_key = 'stock_quantity'",
+			$inventory_id
+		) );
+		$this->assertSame( '20', $new_stock );
+	}
+
 	// ---- Store Response Defaults Test ----
 
 	public function test_store_response_defaults_when_no_atum_meta(): void {
