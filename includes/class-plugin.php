@@ -7,8 +7,6 @@
 
 namespace WCPOS\ATUM;
 
-use WCPOS\WooCommercePOSPro\Services\Stores as WCPOS_Pro_Stores;
-
 /**
  * Main plugin class handling ATUM Multi-Inventory integration with WCPOS.
  */
@@ -480,10 +478,6 @@ class Plugin {
 		}
 
 		if ( ! in_array( $hook_suffix, array( 'admin_page_wcpos-store-edit', 'pos_page_wcpos-store-edit' ), true ) ) {
-			return;
-		}
-
-		if ( ! class_exists( WCPOS_Pro_Stores::class ) ) {
 			return;
 		}
 
