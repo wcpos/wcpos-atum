@@ -90,6 +90,14 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'Store A Location', $script->extra['before'][1] );
 	}
 
+	public function test_store_edit_script_uses_plain_section_styling(): void {
+		$script = file_get_contents( dirname( __DIR__ ) . '/assets/js/store-atum-section.js' );
+
+		$this->assertIsString( $script );
+		$this->assertStringContainsString( 'wcpos:border-b wcpos:border-gray-200 wcpos:pb-6', $script );
+		$this->assertStringNotContainsString( 'wcpos:rounded-lg wcpos:border wcpos:border-gray-200 wcpos:bg-white wcpos:p-6', $script );
+	}
+
 	// ---- Inventory Lookup Tests ----
 
 	public function test_get_inventory_for_product_at_location_returns_data(): void {
