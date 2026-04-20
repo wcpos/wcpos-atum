@@ -46,10 +46,7 @@ class Plugin {
 		add_filter( 'rest_post_dispatch', array( $this, 'inject_store_atum_fields' ), 20, 3 );
 		add_filter( 'woocommerce_rest_prepare_product_object', array( $this, 'inject_atum_product_data' ), 20, 3 );
 		add_filter( 'woocommerce_rest_prepare_product_variation_object', array( $this, 'inject_atum_product_data' ), 20, 3 );
-		add_filter( 'atum/multi_inventory/can_reduce_order_stock', array( $this, 'maybe_block_atum_reduction' ), 10, 2 );
-		add_filter( 'atum/multi_inventory/can_restore_order_stock', array( $this, 'maybe_block_atum_reduction' ), 10, 2 );
-		add_action( 'woocommerce_order_status_changed', array( $this, 'maybe_reduce_pos_order_stock' ), 100, 4 );
-		add_action( 'woocommerce_order_status_changed', array( $this, 'maybe_restore_pos_order_stock' ), 100, 4 );
+		add_filter( 'atum/multi_inventory/order_item_inventories', array( $this, 'scope_order_item_inventories_to_store_location' ), 20, 2 );
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_store_edit_assets' ), 20 );
 	}
 
@@ -206,9 +203,9 @@ class Plugin {
 		// Inject price if pricing source is ATUM.
 		$pricing_source = get_post_meta( $store_id, self::STORE_PRICING_SOURCE_KEY, true );
 		if ( 'atum' === $pricing_source ) {
-			$regular_price = isset( $inventory['_regular_price'] ) ? $inventory['_regular_price'] : '';
-			$sale_price    = isset( $inventory['_sale_price'] ) ? $inventory['_sale_price'] : '';
-			$price         = isset( $inventory['_price'] ) ? $inventory['_price'] : '';
+			$regular_price = isset( $inventory['regular_price'] ) ? $inventory['regular_price'] : ( $inventory['_regular_price'] ?? '' );
+			$sale_price    = isset( $inventory['sale_price'] ) ? $inventory['sale_price'] : ( $inventory['_sale_price'] ?? '' );
+			$price         = isset( $inventory['price'] ) ? $inventory['price'] : ( $inventory['_price'] ?? '' );
 
 			if ( '' !== $regular_price ) {
 				$data['regular_price'] = $regular_price;
@@ -225,8 +222,9 @@ class Plugin {
 
 		// Inject SKU if override enabled.
 		$sku_override = get_post_meta( $store_id, self::STORE_SKU_OVERRIDE_KEY, true );
-		if ( $sku_override && ! empty( $inventory['_sku'] ) ) {
-			$data['sku'] = $inventory['_sku'];
+		$inventory_sku = isset( $inventory['sku'] ) ? $inventory['sku'] : ( $inventory['_sku'] ?? '' );
+		if ( $sku_override && '' !== $inventory_sku ) {
+			$data['sku'] = $inventory_sku;
 		}
 
 		$response->set_data( $data );
@@ -264,236 +262,132 @@ class Plugin {
 			return null;
 		}
 
-		$meta_rows = $wpdb->get_results(
+		$meta = $wpdb->get_row(
 			$wpdb->prepare(
-				"SELECT meta_key, meta_value
+				"SELECT *
 			FROM {$wpdb->prefix}atum_inventory_meta
-			WHERE inventory_id = %d",
+			WHERE inventory_id = %d
+			LIMIT 1",
 				$inventory_id
-			)
+			),
+			ARRAY_A
 		);
 
-		if ( empty( $meta_rows ) ) {
+		if ( empty( $meta ) ) {
 			return null;
 		}
 
-		$meta = array( 'inventory_id' => $inventory_id );
-		foreach ( $meta_rows as $row ) {
-			$meta[ $row->meta_key ] = $row->meta_value;
+		$meta['inventory_id'] = $inventory_id;
+		if ( isset( $meta['stock_quantity'] ) ) {
+			$meta['stock_quantity'] = $this->normalize_inventory_number( $meta['stock_quantity'] );
 		}
+		$meta['_sku']           = $meta['sku'] ?? '';
+		$meta['_regular_price'] = $meta['regular_price'] ?? '';
+		$meta['_sale_price']    = $meta['sale_price'] ?? '';
+		$meta['_price']         = $meta['price'] ?? '';
 
 		return $meta;
 	}
 
 	/**
-	 * Prevent ATUM's default allocation for POS orders that have a store with an ATUM location.
+	 * Restrict ATUM's native order item inventory selection to the store's mapped location.
 	 *
-	 * @param bool  $can_reduce Whether ATUM can reduce stock.
-	 * @param mixed $order      The WooCommerce order.
+	 * @param array $inventories Candidate ATUM inventories for the order item.
+	 * @param mixed $item        WooCommerce order item being prepared by ATUM.
 	 *
-	 * @return bool False if the POS store has a mapped ATUM location.
+	 * @return array
 	 */
-	public function maybe_block_atum_reduction( bool $can_reduce, $order ): bool {
-		if ( ! $can_reduce ) {
-			return $can_reduce;
+	public function scope_order_item_inventories_to_store_location( array $inventories, $item ): array {
+		$location_term_id = $this->get_order_item_store_location( $item );
+		if ( $location_term_id <= 0 ) {
+			return $inventories;
 		}
 
-		if ( ! is_callable( array( $order, 'get_meta' ) ) ) {
-			return $can_reduce;
+		$filtered = array_values(
+			array_filter(
+				$inventories,
+				function ( $inventory ) use ( $location_term_id ): bool {
+					return $this->inventory_matches_location( $inventory, $location_term_id );
+				}
+			)
+		);
+
+		return $filtered;
+	}
+
+	/**
+	 * Get the mapped ATUM location term ID for an order item's POS store.
+	 *
+	 * @param mixed $item WooCommerce order item.
+	 *
+	 * @return int
+	 */
+	private function get_order_item_store_location( $item ): int {
+		if ( ! is_object( $item ) || ! is_callable( array( $item, 'get_order_id' ) ) ) {
+			return 0;
+		}
+
+		$order = is_callable( array( $item, 'get_order' ) ) ? $item->get_order() : null;
+		if ( ! $order && function_exists( 'wc_get_order' ) ) {
+			$order = wc_get_order( (int) $item->get_order_id() );
+		}
+
+		if ( ! $order || ! is_callable( array( $order, 'get_meta' ) ) ) {
+			return 0;
 		}
 
 		$store_id = (int) $order->get_meta( '_pos_store' );
 		if ( $store_id <= 0 ) {
-			return $can_reduce;
+			return 0;
 		}
 
-		$location_term_id = (int) get_post_meta( $store_id, self::STORE_LOCATION_META_KEY, true );
-		if ( $location_term_id <= 0 ) {
-			return $can_reduce;
-		}
-
-		return false;
+		return (int) get_post_meta( $store_id, self::STORE_LOCATION_META_KEY, true );
 	}
 
 	/**
-	 * Reduce stock at the store's ATUM inventory location for POS orders.
+	 * Check whether an ATUM inventory is linked to a specific location term.
 	 *
-	 * @param int    $order_id   The order ID.
-	 * @param string $old_status Previous order status.
-	 * @param string $new_status New order status.
-	 * @param mixed  $order      The WooCommerce order.
-	 */
-	public function maybe_reduce_pos_order_stock( int $order_id, string $old_status, string $new_status, $order ): void {
-		if ( ! $this->is_atum_mi_supported() ) {
-			return;
-		}
-
-		$reduce_statuses = array( 'processing', 'completed' );
-		if ( ! in_array( $new_status, $reduce_statuses, true ) ) {
-			return;
-		}
-
-		if ( $order->get_meta( '_wcpos_atum_stock_reduced' ) ) {
-			return;
-		}
-
-		$store_id = (int) $order->get_meta( '_pos_store' );
-		if ( $store_id <= 0 ) {
-			return;
-		}
-
-		$location_term_id = (int) get_post_meta( $store_id, self::STORE_LOCATION_META_KEY, true );
-		if ( $location_term_id <= 0 ) {
-			return;
-		}
-
-		$this->reduce_order_stock_at_location( $order, $location_term_id );
-
-		$order->update_meta_data( '_wcpos_atum_stock_reduced', 'yes' );
-		$order->save();
-	}
-
-	/**
-	 * Restore stock to the originating ATUM inventory location on refund/cancel.
-	 *
-	 * @param int    $order_id   The order ID.
-	 * @param string $old_status Previous order status.
-	 * @param string $new_status New order status.
-	 * @param mixed  $order      The WooCommerce order.
-	 */
-	public function maybe_restore_pos_order_stock( int $order_id, string $old_status, string $new_status, $order ): void {
-		if ( ! $this->is_atum_mi_supported() ) {
-			return;
-		}
-
-		$restore_statuses = array( 'refunded', 'cancelled' );
-		if ( ! in_array( $new_status, $restore_statuses, true ) ) {
-			return;
-		}
-
-		if ( ! $order->get_meta( '_wcpos_atum_stock_reduced' ) ) {
-			return;
-		}
-
-		if ( $order->get_meta( '_wcpos_atum_stock_restored' ) ) {
-			return;
-		}
-
-		$store_id = (int) $order->get_meta( '_pos_store' );
-		if ( $store_id <= 0 ) {
-			return;
-		}
-
-		$location_term_id = (int) get_post_meta( $store_id, self::STORE_LOCATION_META_KEY, true );
-		if ( $location_term_id <= 0 ) {
-			return;
-		}
-
-		$this->restore_order_stock_from_atum_records( $order );
-
-		$order->update_meta_data( '_wcpos_atum_stock_restored', 'yes' );
-		$order->save();
-	}
-
-	/**
-	 * Reduce stock for each order line item at the specified ATUM location.
-	 *
-	 * @param mixed $order            The WooCommerce order.
+	 * @param mixed $inventory        ATUM inventory object/array.
 	 * @param int   $location_term_id ATUM location term ID.
+	 *
+	 * @return bool
 	 */
-	private function reduce_order_stock_at_location( $order, int $location_term_id ): void {
-		global $wpdb;
+	private function inventory_matches_location( $inventory, int $location_term_id ): bool {
+		$locations = array();
 
-		foreach ( $order->get_items() as $item ) {
-			$variation_id = $item->get_variation_id();
-			$product_id   = $variation_id ? $variation_id : $item->get_product_id();
-			$qty        = $item->get_quantity();
-
-			if ( $qty <= 0 ) {
-				continue;
-			}
-
-			$inventory = $this->get_inventory_for_product_at_location( $product_id, $location_term_id );
-			if ( null === $inventory || ! isset( $inventory['inventory_id'] ) ) {
-				continue;
-			}
-
-			$inventory_id  = (int) $inventory['inventory_id'];
-			$current_stock = isset( $inventory['stock_quantity'] ) ? (float) $inventory['stock_quantity'] : 0;
-			$new_stock     = $current_stock - $qty;
-
-			$wpdb->update(
-				"{$wpdb->prefix}atum_inventory_meta",
-				array( 'meta_value' => (string) $new_stock ),
-				array(
-					'inventory_id' => $inventory_id,
-					'meta_key'     => 'stock_quantity',
-				)
-			);
-
-			$wpdb->insert(
-				"{$wpdb->prefix}atum_inventory_orders",
-				array(
-					'order_id'      => $order->get_id(),
-					'order_item_id' => $item->get_id(),
-					'inventory_id'  => $inventory_id,
-					'product_id'    => $product_id,
-					'order_type'    => 1,
-					'qty'           => $qty,
-					'subtotal'      => $item->get_subtotal(),
-					'total'         => $item->get_total(),
-				)
-			);
+		if ( is_object( $inventory ) && is_callable( array( $inventory, 'get_locations' ) ) ) {
+			$locations = $inventory->get_locations();
+		} elseif ( is_object( $inventory ) && isset( $inventory->location ) ) {
+			$locations = $inventory->location;
+		} elseif ( is_array( $inventory ) && isset( $inventory['location'] ) ) {
+			$locations = $inventory['location'];
 		}
+
+		$locations = array_map( 'intval', (array) $locations );
+
+		return in_array( $location_term_id, $locations, true );
 	}
 
 	/**
-	 * Restore stock using atum_inventory_orders records to find the originating inventory.
+	 * Normalize database numeric strings like 25.0000 to 25.
 	 *
-	 * @param mixed $order The WooCommerce order.
+	 * @param mixed $value Numeric database value.
+	 *
+	 * @return mixed
 	 */
-	private function restore_order_stock_from_atum_records( $order ): void {
-		global $wpdb;
-
-		foreach ( $order->get_items() as $item ) {
-			$order_item_id = $item->get_id();
-
-			$records = $wpdb->get_results(
-				$wpdb->prepare(
-					"SELECT inventory_id, qty FROM {$wpdb->prefix}atum_inventory_orders
-				WHERE order_item_id = %d AND order_type = 1",
-					$order_item_id
-				)
-			);
-
-			if ( empty( $records ) ) {
-				continue;
-			}
-
-			foreach ( $records as $record ) {
-				$inventory_id = (int) $record->inventory_id;
-				$qty          = (float) $record->qty;
-
-				$current_stock = (float) $wpdb->get_var(
-					$wpdb->prepare(
-						"SELECT meta_value FROM {$wpdb->prefix}atum_inventory_meta
-					WHERE inventory_id = %d AND meta_key = 'stock_quantity'",
-						$inventory_id
-					)
-				);
-
-				$new_stock = $current_stock + $qty;
-
-				$wpdb->update(
-					"{$wpdb->prefix}atum_inventory_meta",
-					array( 'meta_value' => (string) $new_stock ),
-					array(
-						'inventory_id' => $inventory_id,
-						'meta_key'     => 'stock_quantity',
-					)
-				);
-			}
+	private function normalize_inventory_number( $value ) {
+		if ( ! is_scalar( $value ) ) {
+			return $value;
 		}
+
+		$value = (string) $value;
+		if ( false === strpos( $value, '.' ) ) {
+			return $value;
+		}
+
+		$normalized = rtrim( rtrim( $value, '0' ), '.' );
+
+		return '' !== $normalized ? $normalized : '0';
 	}
 
 	/**

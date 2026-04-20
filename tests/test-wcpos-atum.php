@@ -83,15 +83,15 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 			'post_title'  => 'Test Product',
 		) );
 
-		$term = wp_insert_term( 'Store A Location', 'atum_location' );
+		$term             = wp_insert_term( 'Store A Location', 'atum_location' );
 		$location_term_id = $term['term_id'];
 
 		$this->create_test_inventory( $product_id, $location_term_id, array(
 			'stock_quantity' => '25',
-			'_sku'           => 'LOC-A-001',
-			'_regular_price' => '19.99',
-			'_sale_price'    => '14.99',
-			'_price'         => '14.99',
+			'sku'            => 'LOC-A-001',
+			'regular_price'  => '19.99',
+			'sale_price'     => '14.99',
+			'price'          => '14.99',
 		) );
 
 		$plugin = \WCPOS\ATUM\Plugin::instance();
@@ -99,10 +99,10 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 
 		$this->assertIsArray( $result );
 		$this->assertSame( '25', $result['stock_quantity'] );
-		$this->assertSame( 'LOC-A-001', $result['_sku'] );
-		$this->assertSame( '19.99', $result['_regular_price'] );
-		$this->assertSame( '14.99', $result['_sale_price'] );
-		$this->assertSame( '14.99', $result['_price'] );
+		$this->assertSame( 'LOC-A-001', $result['sku'] );
+		$this->assertSame( '19.99', $result['regular_price'] );
+		$this->assertSame( '14.99', $result['sale_price'] );
+		$this->assertSame( '14.99', $result['price'] );
 	}
 
 	public function test_get_inventory_for_product_at_location_returns_null_when_not_found(): void {
@@ -190,9 +190,9 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 		) );
 		$this->create_test_inventory( $product_id, $term['term_id'], array(
 			'stock_quantity' => '10',
-			'_regular_price' => '49.99',
-			'_sale_price'    => '39.99',
-			'_price'         => '39.99',
+			'regular_price'  => '49.99',
+			'sale_price'     => '39.99',
+			'price'          => '39.99',
 		) );
 
 		$response = new WP_REST_Response( array(
@@ -244,7 +244,7 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 		) );
 		$this->create_test_inventory( $product_id, $term['term_id'], array(
 			'stock_quantity' => '5',
-			'_sku'           => 'ATUM-SKU-001',
+			'sku'            => 'ATUM-SKU-001',
 		) );
 
 		$response = new WP_REST_Response( array(
@@ -323,9 +323,9 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 		$this->assertSame( 'outofstock', $data['stock_status'] );
 	}
 
-	// ---- Stock Deduction Tests ----
+	// ---- Native ATUM Flow Tests ----
 
-	public function test_atum_stock_reduction_blocked_for_pos_orders_with_location(): void {
+	public function test_atum_stock_reduction_uses_native_atum_flow_for_pos_orders_with_location(): void {
 		add_filter( 'wcpos_atum_is_supported', '__return_true' );
 		$this->create_atum_tables();
 
@@ -346,7 +346,7 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 		$order->save();
 
 		$can_reduce = apply_filters( 'atum/multi_inventory/can_reduce_order_stock', true, $order );
-		$this->assertFalse( $can_reduce );
+		$this->assertTrue( $can_reduce );
 	}
 
 	public function test_atum_stock_reduction_not_blocked_for_non_pos_orders(): void {
@@ -359,7 +359,7 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 		$this->assertTrue( $can_reduce );
 	}
 
-	public function test_pos_order_reduces_stock_at_correct_atum_location(): void {
+	public function test_pos_order_item_inventories_are_scoped_to_the_store_location(): void {
 		add_filter( 'wcpos_atum_is_supported', '__return_true' );
 		$this->create_atum_tables();
 
@@ -382,42 +382,28 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 		$product->set_regular_price( '10.00' );
 		$product->save();
 
-		$inventory_id = $this->create_test_inventory( $product->get_id(), $term['term_id'], array(
-			'stock_quantity' => '20',
-		) );
+		$matching_inventory = $this->make_fake_inventory( 11, array( $term['term_id'] ) );
+		$other_inventory    = $this->make_fake_inventory( 22, array( $term['term_id'] + 100 ) );
 
 		$order = wc_create_order();
 		$order->update_meta_data( '_pos_store', $store_id );
 		$order->add_product( $product, 3 );
 		$order->save();
 
-		$plugin = \WCPOS\ATUM\Plugin::instance();
-		$plugin->maybe_reduce_pos_order_stock( $order->get_id(), 'pending', 'processing', $order );
+		$order_items = $order->get_items();
+		$order_item  = reset( $order_items );
 
-		global $wpdb;
-		$new_stock = $wpdb->get_var( $wpdb->prepare(
-			"SELECT meta_value FROM {$wpdb->prefix}atum_inventory_meta WHERE inventory_id = %d AND meta_key = 'stock_quantity'",
-			$inventory_id
-		) );
-		$this->assertSame( '17', $new_stock );
+		$filtered = apply_filters(
+			'atum/multi_inventory/order_item_inventories',
+			array( $matching_inventory, $other_inventory ),
+			$order_item
+		);
 
-		$order_items   = $order->get_items();
-		$order_item    = reset( $order_items );
-		$order_item_id = $order_item->get_id();
-
-		$inventory_order = $wpdb->get_row( $wpdb->prepare(
-			"SELECT * FROM {$wpdb->prefix}atum_inventory_orders WHERE order_item_id = %d AND inventory_id = %d",
-			$order_item_id,
-			$inventory_id
-		) );
-		$this->assertNotNull( $inventory_order );
-		$this->assertSame( $order->get_id(), (int) $inventory_order->order_id );
-		$this->assertEquals( 3, $inventory_order->qty );
+		$this->assertCount( 1, $filtered );
+		$this->assertSame( 11, $filtered[0]->id );
 	}
 
-	// ---- Stock Restoration Tests ----
-
-	public function test_refund_restores_stock_to_originating_atum_location(): void {
+	public function test_pos_order_item_inventories_return_empty_when_store_location_has_no_matching_inventory(): void {
 		add_filter( 'wcpos_atum_is_supported', '__return_true' );
 		$this->create_atum_tables();
 
@@ -428,54 +414,35 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 		$store_id = wp_insert_post( array(
 			'post_type'   => 'wcpos_store',
 			'post_status' => 'publish',
-			'post_title'  => 'Refund Store',
+			'post_title'  => 'Stock Store',
 		) );
-		$term = wp_insert_term( 'Refund Location', 'atum_location' );
+		$term = wp_insert_term( 'Stock Location', 'atum_location' );
 		update_post_meta( $store_id, '_wcpos_atum_inventory_location', $term['term_id'] );
 
 		$product = new \WC_Product_Simple();
-		$product->set_name( 'Refund Product' );
+		$product->set_name( 'Stock Test Product' );
 		$product->set_manage_stock( true );
 		$product->set_stock_quantity( 100 );
 		$product->set_regular_price( '10.00' );
 		$product->save();
 
-		$inventory_id = $this->create_test_inventory( $product->get_id(), $term['term_id'], array(
-			'stock_quantity' => '17',
-		) );
+		$other_inventory = $this->make_fake_inventory( 22, array( $term['term_id'] + 100 ) );
 
 		$order = wc_create_order();
 		$order->update_meta_data( '_pos_store', $store_id );
-		$order->update_meta_data( '_wcpos_atum_stock_reduced', 'yes' );
 		$order->add_product( $product, 3 );
 		$order->save();
 
-		$order_items   = $order->get_items();
-		$order_item    = reset( $order_items );
-		$order_item_id = $order_item->get_id();
+		$order_items = $order->get_items();
+		$order_item  = reset( $order_items );
 
-		global $wpdb;
-		$wpdb->insert(
-			"{$wpdb->prefix}atum_inventory_orders",
-			array(
-				'order_item_id' => $order_item_id,
-				'inventory_id'  => $inventory_id,
-				'product_id'    => $product->get_id(),
-				'order_type'    => 1,
-				'qty'           => 3,
-				'subtotal'      => 30.00,
-				'total'         => 30.00,
-			)
+		$filtered = apply_filters(
+			'atum/multi_inventory/order_item_inventories',
+			array( $other_inventory ),
+			$order_item
 		);
 
-		$plugin = \WCPOS\ATUM\Plugin::instance();
-		$plugin->maybe_restore_pos_order_stock( $order->get_id(), 'processing', 'refunded', $order );
-
-		$new_stock = $wpdb->get_var( $wpdb->prepare(
-			"SELECT meta_value FROM {$wpdb->prefix}atum_inventory_meta WHERE inventory_id = %d AND meta_key = 'stock_quantity'",
-			$inventory_id
-		) );
-		$this->assertSame( '20', $new_stock );
+		$this->assertSame( array(), $filtered );
 	}
 
 	// ---- Store Response Defaults Test ----
@@ -502,6 +469,34 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 	}
 
 	// ---- Test Helpers ----
+
+	/**
+	 * Create a fake ATUM inventory object for order-item inventory filter tests.
+	 *
+	 * @param int   $inventory_id Inventory ID.
+	 * @param array $locations    Linked ATUM location term IDs.
+	 *
+	 * @return object
+	 */
+	private function make_fake_inventory( int $inventory_id, array $locations ) {
+		return new class( $inventory_id, $locations ) {
+			public $id;
+
+			/**
+			 * @var int[]
+			 */
+			private $locations;
+
+			public function __construct( int $inventory_id, array $locations ) {
+				$this->id        = $inventory_id;
+				$this->locations = $locations;
+			}
+
+			public function get_locations(): array {
+				return $this->locations;
+			}
+		};
+	}
 
 	/**
 	 * Create a mock product with get_id().
@@ -539,13 +534,14 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 		)" );
 
 		$wpdb->query( "CREATE TABLE IF NOT EXISTS {$wpdb->prefix}atum_inventory_meta (
-			id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
 			inventory_id bigint(20) unsigned NOT NULL DEFAULT '0',
-			meta_key varchar(255) DEFAULT NULL,
-			meta_value longtext,
-			PRIMARY KEY (id),
-			KEY inventory_id (inventory_id),
-			KEY meta_key (meta_key(191))
+			manage_stock tinyint(1) NOT NULL DEFAULT '1',
+			stock_quantity decimal(19,4) DEFAULT NULL,
+			sku varchar(100) DEFAULT NULL,
+			regular_price varchar(100) DEFAULT NULL,
+			sale_price varchar(100) DEFAULT NULL,
+			price varchar(100) DEFAULT NULL,
+			PRIMARY KEY (inventory_id)
 		)" );
 
 		$wpdb->query( "CREATE TABLE IF NOT EXISTS {$wpdb->prefix}atum_inventory_locations (
@@ -557,7 +553,6 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 
 		$wpdb->query( "CREATE TABLE IF NOT EXISTS {$wpdb->prefix}atum_inventory_orders (
 			id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
-			order_id bigint(20) unsigned NOT NULL DEFAULT '0',
 			order_item_id bigint(20) unsigned NOT NULL DEFAULT '0',
 			inventory_id bigint(20) unsigned NOT NULL DEFAULT '0',
 			product_id bigint(20) unsigned NOT NULL DEFAULT '0',
@@ -567,6 +562,8 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 			total double DEFAULT NULL,
 			refund_qty double DEFAULT NULL,
 			refund_total double DEFAULT NULL,
+			reduced_stock double DEFAULT NULL,
+			extra_data longtext DEFAULT NULL,
 			PRIMARY KEY (id),
 			KEY order_item_id (order_item_id),
 			KEY inventory_id (inventory_id)
@@ -606,21 +603,21 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 		}
 
 		$defaults = array(
+			'manage_stock'   => 1,
 			'stock_quantity' => '0',
-			'_sku'           => '',
-			'_regular_price' => '',
-			'_sale_price'    => '',
-			'_price'         => '',
+			'sku'            => '',
+			'regular_price'  => '',
+			'sale_price'     => '',
+			'price'          => '',
 		);
-		$meta = array_merge( $defaults, $meta );
 
-		foreach ( $meta as $key => $value ) {
-			$wpdb->insert( "{$wpdb->prefix}atum_inventory_meta", array(
-				'inventory_id' => $inventory_id,
-				'meta_key'     => $key,
-				'meta_value'   => $value,
-			) );
-		}
+		$wpdb->insert(
+			"{$wpdb->prefix}atum_inventory_meta",
+			array_merge(
+				array( 'inventory_id' => $inventory_id ),
+				array_merge( $defaults, $meta )
+			)
+		);
 
 		return $inventory_id;
 	}
