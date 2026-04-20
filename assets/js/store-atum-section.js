@@ -27,11 +27,13 @@
 
       var hasLocation = locationValue && locationValue !== '0';
 
-      return el('div', { className: 'wcpos:rounded-lg wcpos:border wcpos:border-gray-200 wcpos:bg-white wcpos:p-6 wcpos:space-y-6' },
+      return el('div', { className: 'wcpos:border-b wcpos:border-gray-200 wcpos:pb-6 wcpos:space-y-6' },
 
         // Section header.
-        el('h3', { className: 'wcpos:text-base wcpos:font-semibold wcpos:text-gray-900 wcpos:m-0' },
-          strings.sectionLabel || 'ATUM Inventory'
+        el('div', { className: 'wcpos:mb-4' },
+          el('h3', { className: 'wcpos:text-base wcpos:font-semibold wcpos:text-gray-900 wcpos:m-0' },
+            strings.sectionLabel || 'ATUM Inventory'
+          )
         ),
 
         // Location dropdown.
