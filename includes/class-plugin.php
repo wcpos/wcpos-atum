@@ -479,7 +479,7 @@ class Plugin {
 			return;
 		}
 
-		if ( 'admin_page_wcpos-store-edit' !== $hook_suffix ) {
+		if ( ! in_array( $hook_suffix, array( 'admin_page_wcpos-store-edit', 'pos_page_wcpos-store-edit' ), true ) ) {
 			return;
 		}
 

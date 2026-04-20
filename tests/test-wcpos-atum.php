@@ -67,6 +67,29 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 		$this->assertSame( '1', $data['atum_sku_override'] );
 	}
 
+	public function test_store_edit_assets_enqueue_for_pos_store_edit_hook(): void {
+		add_filter( 'wcpos_atum_is_supported', '__return_true' );
+
+		if ( ! taxonomy_exists( 'atum_location' ) ) {
+			register_taxonomy( 'atum_location', 'product', array( 'hierarchical' => true ) );
+		}
+
+		$term = wp_insert_term( 'Store A Location', 'atum_location' );
+
+		wp_register_script( 'woocommerce-pos-pro-store-edit', 'https://example.org/store-edit.js', array( 'wp-element' ), '1.0.0', true );
+		wp_enqueue_script( 'woocommerce-pos-pro-store-edit' );
+
+		$plugin = \WCPOS\ATUM\Plugin::instance();
+		$plugin->enqueue_store_edit_assets( 'pos_page_wcpos-store-edit' );
+
+		$this->assertTrue( wp_script_is( 'wcpos-atum-store-edit', 'enqueued' ) );
+
+		$script = wp_scripts()->registered['wcpos-atum-store-edit'];
+		$this->assertSame( array( 'woocommerce-pos-pro-store-edit', 'wp-element' ), $script->deps );
+		$this->assertStringContainsString( 'store-atum-section.js', $script->src );
+		$this->assertStringContainsString( 'Store A Location', $script->extra['before'][1] );
+	}
+
 	// ---- Inventory Lookup Tests ----
 
 	public function test_get_inventory_for_product_at_location_returns_data(): void {
