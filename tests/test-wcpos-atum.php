@@ -74,7 +74,7 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 			register_taxonomy( 'atum_location', 'product', array( 'hierarchical' => true ) );
 		}
 
-		$term = wp_insert_term( 'Store A Location', 'atum_location' );
+		wp_insert_term( 'Store A Location', 'atum_location' );
 
 		wp_register_script( 'woocommerce-pos-pro-store-edit', 'https://example.org/store-edit.js', array( 'wp-element' ), '1.0.0', true );
 		wp_enqueue_script( 'woocommerce-pos-pro-store-edit' );
