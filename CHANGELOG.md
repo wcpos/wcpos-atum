@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.1.2] - 2026-04-21
+## [0.1.2] - 2026-04-20
 
 ### Fixed
 - Sync product and variation edits from the WCPOS Pro products screen back to the mapped ATUM inventory so location-specific stock updates land on the correct inventory record (PR #8).
