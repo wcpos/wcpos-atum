@@ -53,6 +53,27 @@ jobs:
         if: steps.check_version.outputs.release == 'true'
         run: composer install --no-dev --optimize-autoloader
 
+      - name: Build release notes from changelog
+        if: steps.check_version.outputs.release == 'true'
+        run: |
+          VERSION='${{ steps.check_version.outputs.version }}'
+          awk -v version="$VERSION" '
+            $0 ~ "^## \\[" version "\\]" { capture=1 }
+            capture {
+              if ($0 ~ "^## \\[" && $0 !~ "^## \\[" version "\\]") {
+                exit
+              }
+              print
+            }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "No CHANGELOG.md entry found for version $VERSION"
+            exit 1
+          fi
+
+          printf '\n\nFull changelog: https://github.com/%s/blob/main/CHANGELOG.md\n' '${{ github.repository }}' >> RELEASE_NOTES.md
+
       - name: Build ZIP
         if: steps.check_version.outputs.release == 'true'
         run: |
@@ -86,6 +107,6 @@ jobs:
           gh release create "v${{ steps.check_version.outputs.version }}" \
             wcpos-atum.zip \
             --title "Release v${{ steps.check_version.outputs.version }}" \
-            --notes "Automated release for version ${{ steps.check_version.outputs.version }}"
+            --notes-file RELEASE_NOTES.md
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

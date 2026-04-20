@@ -2,6 +2,18 @@
 
 Integrates [ATUM Multi-Inventory](https://www.stockmanagementlabs.com/addons/atum-multi-inventory/) with [WooCommerce POS Pro](https://wcpos.com), enabling location-based inventory, pricing, and SKUs at the Point of Sale.
 
+## Releases and Changelog
+
+- **Latest version:** `0.1.2`
+- **Downloads and packaged releases:** [GitHub Releases](https://github.com/wcpos/wcpos-atum/releases)
+- **Version history:** [CHANGELOG.md](./CHANGELOG.md)
+
+### Recent Changes
+
+- **0.1.2** — product and variation edits from the POS Pro products screen now write stock changes back to the mapped ATUM inventory, with regression tests covering both paths.
+- **0.1.1** — POS order inventory history now persists WooCommerce order IDs in ATUM, plus workflow and documentation improvements.
+- **0.1.0** — initial public release of the WCPOS ATUM integration.
+
 ## How It Works
 
 ATUM Multi-Inventory lets you split a product's stock across multiple inventory locations (e.g. warehouses, retail stores). This plugin connects those locations to WCPOS Pro stores so that each POS terminal sees the correct stock levels, prices, and SKUs for its physical location.
