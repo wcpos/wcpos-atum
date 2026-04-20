@@ -354,6 +354,148 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 		$this->assertSame( 'outofstock', $data['stock_status'] );
 	}
 
+	public function test_pos_product_update_writes_stock_price_and_sku_to_atum_inventory(): void {
+		add_filter( 'wcpos_atum_is_supported', '__return_true' );
+		$this->create_atum_tables();
+		$this->register_atum_location_taxonomy();
+
+		$store_id         = $this->create_store_with_location( 'Editable Store', 'Editable Location' );
+		$location_term_id = (int) get_post_meta( $store_id, '_wcpos_atum_inventory_location', true );
+		update_post_meta( $store_id, '_wcpos_pricing_source', 'atum' );
+		update_post_meta( $store_id, '_wcpos_atum_sku_override', '1' );
+
+		$product = new \WC_Product_Simple();
+		$product->set_name( 'Editable Product' );
+		$product->set_regular_price( '10.00' );
+		$product->set_sku( 'BASE-SKU' );
+		$product->save();
+
+		$inventory_id = $this->create_test_inventory(
+			$product->get_id(),
+			$location_term_id,
+			array(
+				'stock_quantity' => '4',
+				'regular_price'  => '12.00',
+				'sale_price'     => '',
+				'price'          => '12.00',
+				'sku'            => 'ATUM-OLD',
+			)
+		);
+
+		$request = new WP_REST_Request( 'PATCH', '/wcpos/v1/products/' . $product->get_id() );
+		$request->set_param( 'store_id', $store_id );
+		$request->set_param( 'stock_quantity', 9 );
+		$request->set_param( 'regular_price', '22.00' );
+		$request->set_param( 'sale_price', '18.00' );
+		$request->set_param( 'sku', 'ATUM-NEW' );
+
+		do_action( 'woocommerce_rest_insert_product_object', $product, $request, false );
+
+		$meta = $this->get_inventory_meta( $inventory_id );
+
+		$this->assertSame( '9', $meta['stock_quantity'] );
+		$this->assertSame( '22.00', $meta['regular_price'] );
+		$this->assertSame( '18.00', $meta['sale_price'] );
+		$this->assertSame( '18.00', $meta['price'] );
+		$this->assertSame( 'ATUM-NEW', $meta['sku'] );
+	}
+
+	public function test_pos_variation_update_writes_stock_price_and_sku_to_atum_inventory(): void {
+		add_filter( 'wcpos_atum_is_supported', '__return_true' );
+		$this->create_atum_tables();
+		$this->register_atum_location_taxonomy();
+
+		$store_id         = $this->create_store_with_location( 'Variation Store', 'Variation Location' );
+		$location_term_id = (int) get_post_meta( $store_id, '_wcpos_atum_inventory_location', true );
+		update_post_meta( $store_id, '_wcpos_pricing_source', 'atum' );
+		update_post_meta( $store_id, '_wcpos_atum_sku_override', '1' );
+
+		$parent = new \WC_Product_Variable();
+		$parent->set_name( 'Variable Product' );
+		$parent->save();
+
+		$variation = new \WC_Product_Variation();
+		$variation->set_parent_id( $parent->get_id() );
+		$variation->set_regular_price( '14.00' );
+		$variation->set_sku( 'VAR-BASE' );
+		$variation->save();
+
+		$inventory_id = $this->create_test_inventory(
+			$variation->get_id(),
+			$location_term_id,
+			array(
+				'stock_quantity' => '3',
+				'regular_price'  => '16.00',
+				'sale_price'     => '',
+				'price'          => '16.00',
+				'sku'            => 'VAR-OLD',
+			)
+		);
+
+		$request = new WP_REST_Request( 'PATCH', '/wcpos/v1/products/' . $parent->get_id() . '/variations/' . $variation->get_id() );
+		$request->set_param( 'store_id', $store_id );
+		$request->set_param( 'stock_quantity', 8 );
+		$request->set_param( 'regular_price', '30.00' );
+		$request->set_param( 'sale_price', '' );
+		$request->set_param( 'sku', 'VAR-NEW' );
+
+		do_action( 'woocommerce_rest_insert_product_variation_object', $variation, $request, false );
+
+		$meta = $this->get_inventory_meta( $inventory_id );
+
+		$this->assertSame( '8', $meta['stock_quantity'] );
+		$this->assertSame( '30.00', $meta['regular_price'] );
+		$this->assertSame( '', $meta['sale_price'] );
+		$this->assertSame( '30.00', $meta['price'] );
+		$this->assertSame( 'VAR-NEW', $meta['sku'] );
+	}
+
+	public function test_pos_product_update_only_syncs_stock_when_store_is_not_using_atum_price_or_sku(): void {
+		add_filter( 'wcpos_atum_is_supported', '__return_true' );
+		$this->create_atum_tables();
+		$this->register_atum_location_taxonomy();
+
+		$store_id         = $this->create_store_with_location( 'Stock Only Store', 'Stock Only Location' );
+		$location_term_id = (int) get_post_meta( $store_id, '_wcpos_atum_inventory_location', true );
+		update_post_meta( $store_id, '_wcpos_pricing_source', 'default' );
+		update_post_meta( $store_id, '_wcpos_atum_sku_override', '' );
+
+		$product = new \WC_Product_Simple();
+		$product->set_name( 'Stock Only Product' );
+		$product->set_regular_price( '10.00' );
+		$product->set_sku( 'BASE-SKU' );
+		$product->save();
+
+		$inventory_id = $this->create_test_inventory(
+			$product->get_id(),
+			$location_term_id,
+			array(
+				'stock_quantity' => '2',
+				'regular_price'  => '12.00',
+				'sale_price'     => '11.00',
+				'price'          => '11.00',
+				'sku'            => 'ATUM-OLD',
+			)
+		);
+
+		$request = new WP_REST_Request( 'PATCH', '/wcpos/v1/products/' . $product->get_id() );
+		$request->set_param( 'store_id', $store_id );
+		$request->set_param( 'stock_quantity', 7 );
+		$request->set_param( 'regular_price', '22.00' );
+		$request->set_param( 'sale_price', '18.00' );
+		$request->set_param( 'sku', 'ATUM-NEW' );
+
+		do_action( 'woocommerce_rest_insert_product_object', $product, $request, false );
+
+		$meta = $this->get_inventory_meta( $inventory_id );
+
+		$this->assertSame( '7', $meta['stock_quantity'] );
+		$this->assertSame( '12.00', $meta['regular_price'] );
+		$this->assertSame( '11.00', $meta['sale_price'] );
+		$this->assertSame( '11.00', $meta['price'] );
+		$this->assertSame( 'ATUM-OLD', $meta['sku'] );
+	}
+
 	// ---- Native ATUM Flow Tests ----
 
 	public function test_atum_stock_reduction_uses_native_atum_flow_for_pos_orders_with_location(): void {
@@ -632,6 +774,67 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 				return $this->id;
 			}
 		};
+	}
+
+	/**
+	 * Ensure the ATUM location taxonomy exists for tests.
+	 */
+	private function register_atum_location_taxonomy(): void {
+		if ( ! taxonomy_exists( 'atum_location' ) ) {
+			register_taxonomy( 'atum_location', 'product', array( 'hierarchical' => true ) );
+		}
+	}
+
+	/**
+	 * Create a WCPOS store mapped to an ATUM location.
+	 *
+	 * @param string $store_title    Store post title.
+	 * @param string $location_label ATUM location term label.
+	 *
+	 * @return int
+	 */
+	private function create_store_with_location( string $store_title, string $location_label ): int {
+		$store_id = wp_insert_post(
+			array(
+				'post_type'   => 'wcpos_store',
+				'post_status' => 'publish',
+				'post_title'  => $store_title,
+			)
+		);
+
+		$term = wp_insert_term( $location_label, 'atum_location' );
+		update_post_meta( $store_id, '_wcpos_atum_inventory_location', $term['term_id'] );
+
+		return $store_id;
+	}
+
+	/**
+	 * Fetch a single ATUM inventory_meta row as an associative array.
+	 *
+	 * @param int $inventory_id Inventory ID.
+	 *
+	 * @return array<string,string>
+	 */
+	private function get_inventory_meta( int $inventory_id ): array {
+		global $wpdb;
+
+		$meta = $wpdb->get_row(
+			$wpdb->prepare(
+				"SELECT * FROM {$wpdb->prefix}atum_inventory_meta WHERE inventory_id = %d",
+				$inventory_id
+			),
+			ARRAY_A
+		);
+
+		if ( ! is_array( $meta ) ) {
+			return array();
+		}
+
+		if ( isset( $meta['stock_quantity'] ) ) {
+			$meta['stock_quantity'] = rtrim( rtrim( (string) $meta['stock_quantity'], '0' ), '.' );
+		}
+
+		return $meta;
 	}
 
 	/**
