@@ -45,6 +45,8 @@ class Plugin {
 		add_filter( 'rest_post_dispatch', array( $this, 'inject_store_atum_fields' ), 20, 3 );
 		add_filter( 'woocommerce_rest_prepare_product_object', array( $this, 'inject_atum_product_data' ), 20, 3 );
 		add_filter( 'woocommerce_rest_prepare_product_variation_object', array( $this, 'inject_atum_product_data' ), 20, 3 );
+		add_action( 'woocommerce_rest_insert_product_object', array( $this, 'sync_atum_inventory_on_product_update' ), 20, 3 );
+		add_action( 'woocommerce_rest_insert_product_variation_object', array( $this, 'sync_atum_inventory_on_product_update' ), 20, 3 );
 		add_filter( 'atum/multi_inventory/order_item_inventories', array( $this, 'scope_order_item_inventories_to_store_location' ), 20, 2 );
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_store_edit_assets' ), 20 );
 	}
@@ -310,6 +312,58 @@ class Plugin {
 	}
 
 	/**
+	 * Sync POS product edits back into the mapped ATUM inventory record.
+	 *
+	 * @param mixed            $product  WooCommerce product or variation object.
+	 * @param \WP_REST_Request $request  Current REST request.
+	 * @param bool             $creating Whether WooCommerce is creating the object.
+	 */
+	public function sync_atum_inventory_on_product_update( $product, \WP_REST_Request $request, bool $creating ): void {
+		if ( $creating || ! $this->is_atum_mi_supported() ) {
+			return;
+		}
+
+		if ( ! $this->is_wcpos_product_write_request( $request ) ) {
+			return;
+		}
+
+		$store_id = (int) $request->get_param( 'store_id' );
+		if ( $store_id <= 0 ) {
+			return;
+		}
+
+		$location_term_id = (int) get_post_meta( $store_id, self::STORE_LOCATION_META_KEY, true );
+		if ( $location_term_id <= 0 ) {
+			return;
+		}
+
+		if ( ! is_object( $product ) || ! is_callable( array( $product, 'get_id' ) ) ) {
+			return;
+		}
+
+		$product_id = (int) $product->get_id();
+		if ( $product_id <= 0 ) {
+			return;
+		}
+
+		$inventory = $this->get_write_target_inventory( $request, $product_id, $location_term_id );
+		if ( null === $inventory || empty( $inventory['inventory_id'] ) ) {
+			return;
+		}
+
+		$pricing_source = (string) get_post_meta( $store_id, self::STORE_PRICING_SOURCE_KEY, true );
+		$sku_override   = (bool) get_post_meta( $store_id, self::STORE_SKU_OVERRIDE_KEY, true );
+
+		$this->update_inventory_meta_from_request(
+			(int) $inventory['inventory_id'],
+			$request,
+			$inventory,
+			'atum' === $pricing_source,
+			$sku_override
+		);
+	}
+
+	/**
 	 * Find the ATUM inventory record for a product at a specific location.
 	 *
 	 * @param int $product_id       WooCommerce product ID.
@@ -318,52 +372,141 @@ class Plugin {
 	 * @return array|null Associative array of inventory meta, or null if not found.
 	 */
 	public function get_inventory_for_product_at_location( int $product_id, int $location_term_id ): ?array {
-		global $wpdb;
+		$inventories = $this->get_inventories_for_product_at_location( $product_id, $location_term_id );
 
-		$inventory_id = (int) $wpdb->get_var(
-			$wpdb->prepare(
-				"SELECT i.id
-			FROM {$wpdb->prefix}atum_inventories i
-			INNER JOIN {$wpdb->prefix}atum_inventory_locations il ON i.id = il.inventory_id
-			INNER JOIN {$wpdb->term_taxonomy} tt ON il.term_taxonomy_id = tt.term_taxonomy_id
-			WHERE i.product_id = %d
-			AND tt.term_id = %d
-			AND tt.taxonomy = 'atum_location'
-			LIMIT 1",
-				$product_id,
-				$location_term_id
-			)
-		);
-
-		if ( $inventory_id <= 0 ) {
+		if ( empty( $inventories ) ) {
 			return null;
 		}
 
-		$meta = $wpdb->get_row(
+		return $inventories[0];
+	}
+
+	/**
+	 * Find all ATUM inventory records for a product at a specific location.
+	 *
+	 * @param int $product_id       WooCommerce product ID.
+	 * @param int $location_term_id Term ID of the atum_location taxonomy term.
+	 *
+	 * @return array<int,array>
+	 */
+	private function get_inventories_for_product_at_location( int $product_id, int $location_term_id ): array {
+		global $wpdb;
+
+		$inventory_rows = $wpdb->get_results(
 			$wpdb->prepare(
-				"SELECT *
-			FROM {$wpdb->prefix}atum_inventory_meta
-			WHERE inventory_id = %d
-			LIMIT 1",
-				$inventory_id
+				"SELECT i.id AS inventory_id, im.manage_stock, im.stock_quantity, im.sku, im.regular_price, im.sale_price, im.price
+			FROM {$wpdb->prefix}atum_inventories i
+			INNER JOIN {$wpdb->prefix}atum_inventory_locations il ON i.id = il.inventory_id
+			INNER JOIN {$wpdb->term_taxonomy} tt ON il.term_taxonomy_id = tt.term_taxonomy_id
+			INNER JOIN {$wpdb->prefix}atum_inventory_meta im ON i.id = im.inventory_id
+			WHERE i.product_id = %d
+			AND tt.term_id = %d
+			AND tt.taxonomy = 'atum_location'
+			ORDER BY i.is_main DESC, i.priority ASC, i.id ASC",
+				$product_id,
+				$location_term_id
 			),
 			ARRAY_A
 		);
 
-		if ( empty( $meta ) ) {
+		if ( empty( $inventory_rows ) ) {
+			return array();
+		}
+
+		foreach ( $inventory_rows as $index => $inventory_row ) {
+			if ( isset( $inventory_row['stock_quantity'] ) ) {
+				$inventory_rows[ $index ]['stock_quantity'] = $this->normalize_inventory_number( $inventory_row['stock_quantity'] );
+			}
+			$inventory_rows[ $index ]['_sku']           = $inventory_row['sku'] ?? '';
+			$inventory_rows[ $index ]['_regular_price'] = $inventory_row['regular_price'] ?? '';
+			$inventory_rows[ $index ]['_sale_price']    = $inventory_row['sale_price'] ?? '';
+			$inventory_rows[ $index ]['_price']         = $inventory_row['price'] ?? '';
+		}
+
+		return $inventory_rows;
+	}
+
+	/**
+	 * Resolve a unique ATUM inventory target for a write request.
+	 *
+	 * @param \WP_REST_Request $request          Current REST request.
+	 * @param int              $product_id       WooCommerce product ID.
+	 * @param int              $location_term_id Term ID of the atum_location taxonomy term.
+	 *
+	 * @return array|null
+	 */
+	private function get_write_target_inventory( \WP_REST_Request $request, int $product_id, int $location_term_id ): ?array {
+		$inventories = $this->get_inventories_for_product_at_location( $product_id, $location_term_id );
+
+		if ( empty( $inventories ) ) {
 			return null;
 		}
 
-		$meta['inventory_id'] = $inventory_id;
-		if ( isset( $meta['stock_quantity'] ) ) {
-			$meta['stock_quantity'] = $this->normalize_inventory_number( $meta['stock_quantity'] );
-		}
-		$meta['_sku']           = $meta['sku'] ?? '';
-		$meta['_regular_price'] = $meta['regular_price'] ?? '';
-		$meta['_sale_price']    = $meta['sale_price'] ?? '';
-		$meta['_price']         = $meta['price'] ?? '';
+		$requested_inventory_id = absint( $request->get_param( 'inventory_id' ) );
+		if ( $requested_inventory_id > 0 ) {
+			foreach ( $inventories as $inventory ) {
+				if ( $requested_inventory_id === (int) $inventory['inventory_id'] ) {
+					return $inventory;
+				}
+			}
 
-		return $meta;
+			return null;
+		}
+
+		if ( 1 !== count( $inventories ) ) {
+			return null;
+		}
+
+		return $inventories[0];
+	}
+
+	/**
+	 * Persist mapped request fields into an ATUM inventory_meta row.
+	 *
+	 * @param int              $inventory_id Inventory ID.
+	 * @param \WP_REST_Request $request      Current REST request.
+	 * @param array            $inventory    Existing inventory meta row.
+	 * @param bool             $sync_price   Whether ATUM pricing is active for the store.
+	 * @param bool             $sync_sku     Whether ATUM SKU override is active for the store.
+	 */
+	private function update_inventory_meta_from_request( int $inventory_id, \WP_REST_Request $request, array $inventory, bool $sync_price, bool $sync_sku ): void {
+		$updates = array();
+
+		if ( $request->has_param( 'stock_quantity' ) ) {
+			$updates['stock_quantity'] = $this->normalize_inventory_number( $request->get_param( 'stock_quantity' ) );
+		}
+
+		if ( $sync_price && $request->has_param( 'regular_price' ) ) {
+			$updates['regular_price'] = (string) $request->get_param( 'regular_price' );
+		}
+
+		if ( $sync_price && $request->has_param( 'sale_price' ) ) {
+			$updates['sale_price'] = (string) $request->get_param( 'sale_price' );
+		}
+
+		if ( $sync_sku && $request->has_param( 'sku' ) ) {
+			$updates['sku'] = (string) $request->get_param( 'sku' );
+		}
+
+		if ( $sync_price && $request->has_param( 'price' ) ) {
+			$updates['price'] = (string) $request->get_param( 'price' );
+		} elseif ( $sync_price && ( array_key_exists( 'regular_price', $updates ) || array_key_exists( 'sale_price', $updates ) ) ) {
+			$regular_price    = $updates['regular_price'] ?? ( $inventory['regular_price'] ?? '' );
+			$sale_price       = $updates['sale_price'] ?? ( $inventory['sale_price'] ?? '' );
+			$updates['price'] = '' !== $sale_price ? $sale_price : $regular_price;
+		}
+
+		if ( empty( $updates ) ) {
+			return;
+		}
+
+		global $wpdb;
+
+		$wpdb->update(
+			"{$wpdb->prefix}atum_inventory_meta",
+			$updates,
+			array( 'inventory_id' => $inventory_id )
+		);
 	}
 
 	/**
@@ -569,6 +712,21 @@ class Plugin {
 	 */
 	private function is_wcpos_order_write_request( \WP_REST_Request $request ): bool {
 		if ( 0 !== strpos( $request->get_route(), '/wcpos/v1/orders' ) ) {
+			return false;
+		}
+
+		return in_array( $request->get_method(), array( 'POST', 'PUT', 'PATCH' ), true );
+	}
+
+	/**
+	 * Check if a request is updating a POS product or variation through wcpos/v1.
+	 *
+	 * @param \WP_REST_Request $request The current REST request.
+	 *
+	 * @return bool
+	 */
+	private function is_wcpos_product_write_request( \WP_REST_Request $request ): bool {
+		if ( 0 !== strpos( $request->get_route(), '/wcpos/v1/products' ) ) {
 			return false;
 		}
 
