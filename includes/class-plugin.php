@@ -434,6 +434,7 @@ class Plugin {
 			$wpdb->insert(
 				"{$wpdb->prefix}atum_inventory_orders",
 				array(
+					'order_id'      => $order->get_id(),
 					'order_item_id' => $item->get_id(),
 					'inventory_id'  => $inventory_id,
 					'product_id'    => $product_id,

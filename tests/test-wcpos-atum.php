@@ -411,6 +411,7 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 			$inventory_id
 		) );
 		$this->assertNotNull( $inventory_order );
+		$this->assertSame( $order->get_id(), (int) $inventory_order->order_id );
 		$this->assertEquals( 3, $inventory_order->qty );
 	}
 
@@ -556,6 +557,7 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 
 		$wpdb->query( "CREATE TABLE IF NOT EXISTS {$wpdb->prefix}atum_inventory_orders (
 			id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+			order_id bigint(20) unsigned NOT NULL DEFAULT '0',
 			order_item_id bigint(20) unsigned NOT NULL DEFAULT '0',
 			inventory_id bigint(20) unsigned NOT NULL DEFAULT '0',
 			product_id bigint(20) unsigned NOT NULL DEFAULT '0',
