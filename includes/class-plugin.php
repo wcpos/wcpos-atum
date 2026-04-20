@@ -346,7 +346,7 @@ class Plugin {
 			return;
 		}
 
-		$inventory = $this->get_inventory_for_product_at_location( $product_id, $location_term_id );
+		$inventory = $this->get_write_target_inventory( $request, $product_id, $location_term_id );
 		if ( null === $inventory || empty( $inventory['inventory_id'] ) ) {
 			return;
 		}
@@ -372,52 +372,92 @@ class Plugin {
 	 * @return array|null Associative array of inventory meta, or null if not found.
 	 */
 	public function get_inventory_for_product_at_location( int $product_id, int $location_term_id ): ?array {
-		global $wpdb;
+		$inventories = $this->get_inventories_for_product_at_location( $product_id, $location_term_id );
 
-		$inventory_id = (int) $wpdb->get_var(
-			$wpdb->prepare(
-				"SELECT i.id
-			FROM {$wpdb->prefix}atum_inventories i
-			INNER JOIN {$wpdb->prefix}atum_inventory_locations il ON i.id = il.inventory_id
-			INNER JOIN {$wpdb->term_taxonomy} tt ON il.term_taxonomy_id = tt.term_taxonomy_id
-			WHERE i.product_id = %d
-			AND tt.term_id = %d
-			AND tt.taxonomy = 'atum_location'
-			LIMIT 1",
-				$product_id,
-				$location_term_id
-			)
-		);
-
-		if ( $inventory_id <= 0 ) {
+		if ( empty( $inventories ) ) {
 			return null;
 		}
 
-		$meta = $wpdb->get_row(
+		return $inventories[0];
+	}
+
+	/**
+	 * Find all ATUM inventory records for a product at a specific location.
+	 *
+	 * @param int $product_id       WooCommerce product ID.
+	 * @param int $location_term_id Term ID of the atum_location taxonomy term.
+	 *
+	 * @return array<int,array>
+	 */
+	private function get_inventories_for_product_at_location( int $product_id, int $location_term_id ): array {
+		global $wpdb;
+
+		$inventory_rows = $wpdb->get_results(
 			$wpdb->prepare(
-				"SELECT *
-			FROM {$wpdb->prefix}atum_inventory_meta
-			WHERE inventory_id = %d
-			LIMIT 1",
-				$inventory_id
+				"SELECT i.id AS inventory_id, im.manage_stock, im.stock_quantity, im.sku, im.regular_price, im.sale_price, im.price
+			FROM {$wpdb->prefix}atum_inventories i
+			INNER JOIN {$wpdb->prefix}atum_inventory_locations il ON i.id = il.inventory_id
+			INNER JOIN {$wpdb->term_taxonomy} tt ON il.term_taxonomy_id = tt.term_taxonomy_id
+			INNER JOIN {$wpdb->prefix}atum_inventory_meta im ON i.id = im.inventory_id
+			WHERE i.product_id = %d
+			AND tt.term_id = %d
+			AND tt.taxonomy = 'atum_location'
+			ORDER BY i.is_main DESC, i.priority ASC, i.id ASC",
+				$product_id,
+				$location_term_id
 			),
 			ARRAY_A
 		);
 
-		if ( empty( $meta ) ) {
+		if ( empty( $inventory_rows ) ) {
+			return array();
+		}
+
+		foreach ( $inventory_rows as $index => $inventory_row ) {
+			if ( isset( $inventory_row['stock_quantity'] ) ) {
+				$inventory_rows[ $index ]['stock_quantity'] = $this->normalize_inventory_number( $inventory_row['stock_quantity'] );
+			}
+			$inventory_rows[ $index ]['_sku']           = $inventory_row['sku'] ?? '';
+			$inventory_rows[ $index ]['_regular_price'] = $inventory_row['regular_price'] ?? '';
+			$inventory_rows[ $index ]['_sale_price']    = $inventory_row['sale_price'] ?? '';
+			$inventory_rows[ $index ]['_price']         = $inventory_row['price'] ?? '';
+		}
+
+		return $inventory_rows;
+	}
+
+	/**
+	 * Resolve a unique ATUM inventory target for a write request.
+	 *
+	 * @param \WP_REST_Request $request          Current REST request.
+	 * @param int              $product_id       WooCommerce product ID.
+	 * @param int              $location_term_id Term ID of the atum_location taxonomy term.
+	 *
+	 * @return array|null
+	 */
+	private function get_write_target_inventory( \WP_REST_Request $request, int $product_id, int $location_term_id ): ?array {
+		$inventories = $this->get_inventories_for_product_at_location( $product_id, $location_term_id );
+
+		if ( empty( $inventories ) ) {
 			return null;
 		}
 
-		$meta['inventory_id'] = $inventory_id;
-		if ( isset( $meta['stock_quantity'] ) ) {
-			$meta['stock_quantity'] = $this->normalize_inventory_number( $meta['stock_quantity'] );
-		}
-		$meta['_sku']           = $meta['sku'] ?? '';
-		$meta['_regular_price'] = $meta['regular_price'] ?? '';
-		$meta['_sale_price']    = $meta['sale_price'] ?? '';
-		$meta['_price']         = $meta['price'] ?? '';
+		$requested_inventory_id = absint( $request->get_param( 'inventory_id' ) );
+		if ( $requested_inventory_id > 0 ) {
+			foreach ( $inventories as $inventory ) {
+				if ( $requested_inventory_id === (int) $inventory['inventory_id'] ) {
+					return $inventory;
+				}
+			}
 
-		return $meta;
+			return null;
+		}
+
+		if ( 1 !== count( $inventories ) ) {
+			return null;
+		}
+
+		return $inventories[0];
 	}
 
 	/**

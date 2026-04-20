@@ -496,6 +496,125 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 		$this->assertSame( 'ATUM-OLD', $meta['sku'] );
 	}
 
+	public function test_pos_product_update_skips_write_back_when_multiple_location_inventories_match_without_inventory_id(): void {
+		add_filter( 'wcpos_atum_is_supported', '__return_true' );
+		$this->create_atum_tables();
+		$this->register_atum_location_taxonomy();
+
+		$store_id         = $this->create_store_with_location( 'Ambiguous Store', 'Ambiguous Location' );
+		$location_term_id = (int) get_post_meta( $store_id, '_wcpos_atum_inventory_location', true );
+		update_post_meta( $store_id, '_wcpos_pricing_source', 'atum' );
+		update_post_meta( $store_id, '_wcpos_atum_sku_override', '1' );
+
+		$product = new \WC_Product_Simple();
+		$product->set_name( 'Ambiguous Product' );
+		$product->save();
+
+		$inventory_a = $this->create_test_inventory(
+			$product->get_id(),
+			$location_term_id,
+			array(
+				'stock_quantity' => '2',
+				'regular_price'  => '12.00',
+				'sale_price'     => '',
+				'price'          => '12.00',
+				'sku'            => 'ATUM-A',
+			)
+		);
+
+		$inventory_b = $this->create_test_inventory(
+			$product->get_id(),
+			$location_term_id,
+			array(
+				'stock_quantity' => '5',
+				'regular_price'  => '15.00',
+				'sale_price'     => '',
+				'price'          => '15.00',
+				'sku'            => 'ATUM-B',
+			)
+		);
+
+		$request = new WP_REST_Request( 'PATCH', '/wcpos/v1/products/' . $product->get_id() );
+		$request->set_param( 'store_id', $store_id );
+		$request->set_param( 'stock_quantity', 9 );
+		$request->set_param( 'regular_price', '22.00' );
+		$request->set_param( 'sale_price', '18.00' );
+		$request->set_param( 'sku', 'ATUM-NEW' );
+
+		do_action( 'woocommerce_rest_insert_product_object', $product, $request, false );
+
+		$meta_a = $this->get_inventory_meta( $inventory_a );
+		$meta_b = $this->get_inventory_meta( $inventory_b );
+
+		$this->assertSame( '2', $meta_a['stock_quantity'] );
+		$this->assertSame( '12.00', $meta_a['regular_price'] );
+		$this->assertSame( 'ATUM-A', $meta_a['sku'] );
+		$this->assertSame( '5', $meta_b['stock_quantity'] );
+		$this->assertSame( '15.00', $meta_b['regular_price'] );
+		$this->assertSame( 'ATUM-B', $meta_b['sku'] );
+	}
+
+	public function test_pos_product_update_uses_explicit_inventory_id_when_multiple_location_inventories_match(): void {
+		add_filter( 'wcpos_atum_is_supported', '__return_true' );
+		$this->create_atum_tables();
+		$this->register_atum_location_taxonomy();
+
+		$store_id         = $this->create_store_with_location( 'Explicit Inventory Store', 'Explicit Inventory Location' );
+		$location_term_id = (int) get_post_meta( $store_id, '_wcpos_atum_inventory_location', true );
+		update_post_meta( $store_id, '_wcpos_pricing_source', 'atum' );
+		update_post_meta( $store_id, '_wcpos_atum_sku_override', '1' );
+
+		$product = new \WC_Product_Simple();
+		$product->set_name( 'Explicit Inventory Product' );
+		$product->save();
+
+		$inventory_a = $this->create_test_inventory(
+			$product->get_id(),
+			$location_term_id,
+			array(
+				'stock_quantity' => '2',
+				'regular_price'  => '12.00',
+				'sale_price'     => '',
+				'price'          => '12.00',
+				'sku'            => 'ATUM-A',
+			)
+		);
+
+		$inventory_b = $this->create_test_inventory(
+			$product->get_id(),
+			$location_term_id,
+			array(
+				'stock_quantity' => '5',
+				'regular_price'  => '15.00',
+				'sale_price'     => '',
+				'price'          => '15.00',
+				'sku'            => 'ATUM-B',
+			)
+		);
+
+		$request = new WP_REST_Request( 'PATCH', '/wcpos/v1/products/' . $product->get_id() );
+		$request->set_param( 'store_id', $store_id );
+		$request->set_param( 'inventory_id', $inventory_b );
+		$request->set_param( 'stock_quantity', 9 );
+		$request->set_param( 'regular_price', '22.00' );
+		$request->set_param( 'sale_price', '18.00' );
+		$request->set_param( 'sku', 'ATUM-NEW' );
+
+		do_action( 'woocommerce_rest_insert_product_object', $product, $request, false );
+
+		$meta_a = $this->get_inventory_meta( $inventory_a );
+		$meta_b = $this->get_inventory_meta( $inventory_b );
+
+		$this->assertSame( '2', $meta_a['stock_quantity'] );
+		$this->assertSame( '12.00', $meta_a['regular_price'] );
+		$this->assertSame( 'ATUM-A', $meta_a['sku'] );
+		$this->assertSame( '9', $meta_b['stock_quantity'] );
+		$this->assertSame( '22.00', $meta_b['regular_price'] );
+		$this->assertSame( '18.00', $meta_b['sale_price'] );
+		$this->assertSame( '18.00', $meta_b['price'] );
+		$this->assertSame( 'ATUM-NEW', $meta_b['sku'] );
+	}
+
 	// ---- Native ATUM Flow Tests ----
 
 	public function test_atum_stock_reduction_uses_native_atum_flow_for_pos_orders_with_location(): void {

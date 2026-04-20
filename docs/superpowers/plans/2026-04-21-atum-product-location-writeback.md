@@ -10,7 +10,7 @@
 
 ---
 
-### Task 1: Add failing regression tests for POS product and variation edits
+## Task 1: Add failing regression tests for POS product and variation edits
 
 **Files:**
 - Modify: `tests/test-wcpos-atum.php`
@@ -24,8 +24,10 @@ public function test_pos_product_update_writes_stock_price_and_sku_to_atum_inven
 	$this->create_atum_tables();
 	$this->register_atum_location_taxonomy();
 
-	$store_id          = $this->create_store_with_location();
+	$store_id          = $this->create_store_with_location( 'Editable Store', 'Editable Location' );
 	$location_term_id  = (int) get_post_meta( $store_id, '_wcpos_atum_inventory_location', true );
+	update_post_meta( $store_id, '_wcpos_pricing_source', 'atum' );
+	update_post_meta( $store_id, '_wcpos_atum_sku_override', '1' );
 	$product           = new \WC_Product_Simple();
 	$product->set_name( 'Editable Product' );
 	$product->set_regular_price( '10.00' );
@@ -52,7 +54,7 @@ public function test_pos_product_update_writes_stock_price_and_sku_to_atum_inven
 	$request->set_param( 'sku', 'ATUM-NEW' );
 
 	$plugin = \WCPOS\ATUM\Plugin::instance();
-	$plugin->sync_atum_inventory_on_product_update( $product, $request, true );
+	$plugin->sync_atum_inventory_on_product_update( $product, $request, false );
 
 	$meta = $this->get_inventory_meta( $inventory_id );
 	$this->assertSame( '9', $meta['stock_quantity'] );
@@ -76,8 +78,10 @@ public function test_pos_variation_update_writes_stock_price_and_sku_to_atum_inv
 	$this->create_atum_tables();
 	$this->register_atum_location_taxonomy();
 
-	$store_id         = $this->create_store_with_location();
+	$store_id         = $this->create_store_with_location( 'Variation Store', 'Variation Location' );
 	$location_term_id = (int) get_post_meta( $store_id, '_wcpos_atum_inventory_location', true );
+	update_post_meta( $store_id, '_wcpos_pricing_source', 'atum' );
+	update_post_meta( $store_id, '_wcpos_atum_sku_override', '1' );
 
 	$parent = new \WC_Product_Variable();
 	$parent->set_name( 'Variable Product' );
@@ -109,7 +113,7 @@ public function test_pos_variation_update_writes_stock_price_and_sku_to_atum_inv
 	$request->set_param( 'sku', 'VAR-NEW' );
 
 	$plugin = \WCPOS\ATUM\Plugin::instance();
-	$plugin->sync_atum_inventory_on_product_update( $variation, $request, true );
+	$plugin->sync_atum_inventory_on_product_update( $variation, $request, false );
 
 	$meta = $this->get_inventory_meta( $inventory_id );
 	$this->assertSame( '8', $meta['stock_quantity'] );
@@ -132,7 +136,7 @@ git add tests/test-wcpos-atum.php docs/superpowers/plans/2026-04-21-atum-product
 git commit -m "test: cover missing ATUM product write-back"
 ```
 
-### Task 2: Implement mapped ATUM inventory write-back for WCPOS product saves
+## Task 2: Implement mapped ATUM inventory write-back for WCPOS product saves
 
 **Files:**
 - Modify: `includes/class-plugin.php`
@@ -240,7 +244,7 @@ git add includes/class-plugin.php tests/test-wcpos-atum.php docs/superpowers/pla
 git commit -m "fix: sync POS product edits to mapped ATUM inventory"
 ```
 
-### Task 3: Verify the full plugin test suite
+## Task 3: Verify the full plugin test suite
 
 **Files:**
 - Modify: none
