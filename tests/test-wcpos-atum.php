@@ -445,6 +445,92 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 		$this->assertSame( array(), $filtered );
 	}
 
+	public function test_pos_order_request_injects_mi_inventories_for_store_location(): void {
+		add_filter( 'wcpos_atum_is_supported', '__return_true' );
+		$this->create_atum_tables();
+
+		if ( ! taxonomy_exists( 'atum_location' ) ) {
+			register_taxonomy( 'atum_location', 'product', array( 'hierarchical' => true ) );
+		}
+
+		$store_id = wp_insert_post( array(
+			'post_type'   => 'wcpos_store',
+			'post_status' => 'publish',
+			'post_title'  => 'REST Store',
+		) );
+		$term = wp_insert_term( 'REST Location', 'atum_location' );
+		update_post_meta( $store_id, '_wcpos_atum_inventory_location', $term['term_id'] );
+
+		$product_id = wp_insert_post( array(
+			'post_type'   => 'product',
+			'post_status' => 'publish',
+			'post_title'  => 'REST Product',
+		) );
+		$inventory_id = $this->create_test_inventory(
+			$product_id,
+			$term['term_id'],
+			array(
+				'stock_quantity' => '7',
+			)
+		);
+
+		$request = new WP_REST_Request( 'POST', '/wcpos/v1/orders' );
+		$request->set_param( 'store_id', $store_id );
+		$request->set_param(
+			'line_items',
+			array(
+				array(
+					'product_id' => $product_id,
+					'quantity'   => 2,
+				),
+			)
+		);
+
+		apply_filters( 'rest_request_before_callbacks', null, array(), $request );
+
+		$line_items = $request->get_param( 'line_items' );
+
+		$this->assertSame(
+			array(
+				array(
+					'inventory_id' => $inventory_id,
+					'product_id'   => $product_id,
+					'qty'          => 2,
+				),
+			),
+			$line_items[0]['mi_inventories']
+		);
+	}
+
+	public function test_pos_order_request_preserves_existing_mi_inventories(): void {
+		add_filter( 'wcpos_atum_is_supported', '__return_true' );
+
+		$request = new WP_REST_Request( 'POST', '/wcpos/v1/orders' );
+		$request->set_param( 'store_id', 123 );
+		$request->set_param(
+			'line_items',
+			array(
+				array(
+					'product_id'      => 456,
+					'quantity'        => 1,
+					'mi_inventories'  => array(
+						array(
+							'inventory_id' => 789,
+							'product_id'   => 456,
+							'qty'          => 1,
+						),
+					),
+				),
+			)
+		);
+
+		apply_filters( 'rest_request_before_callbacks', null, array(), $request );
+
+		$line_items = $request->get_param( 'line_items' );
+
+		$this->assertSame( 789, $line_items[0]['mi_inventories'][0]['inventory_id'] );
+	}
+
 	// ---- Store Response Defaults Test ----
 
 	public function test_store_response_defaults_when_no_atum_meta(): void {

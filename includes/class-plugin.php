@@ -43,6 +43,7 @@ class Plugin {
 	private function __construct() {
 		add_action( 'init', array( $this, 'load_textdomain' ) );
 		add_filter( 'woocommerce_pos_store_meta_fields', array( $this, 'extend_store_meta_fields' ) );
+		add_filter( 'rest_request_before_callbacks', array( $this, 'inject_pos_order_item_inventories' ), 10, 3 );
 		add_filter( 'rest_post_dispatch', array( $this, 'inject_store_atum_fields' ), 20, 3 );
 		add_filter( 'woocommerce_rest_prepare_product_object', array( $this, 'inject_atum_product_data' ), 20, 3 );
 		add_filter( 'woocommerce_rest_prepare_product_variation_object', array( $this, 'inject_atum_product_data' ), 20, 3 );
@@ -113,6 +114,84 @@ class Plugin {
 
 		$result->set_data( $data );
 		return $result;
+	}
+
+	/**
+	 * Inject explicit ATUM inventory allocations into WCPOS REST order payloads.
+	 *
+	 * ATUM's REST order saver expects line_items[].mi_inventories during order creation,
+	 * otherwise it falls back to the main inventory even when a POS store is mapped to a
+	 * specific ATUM location.
+	 *
+	 * @param mixed            $response The current REST pre-callback response.
+	 * @param array            $handler  The matched route handler.
+	 * @param \WP_REST_Request $request  The current REST request.
+	 *
+	 * @return mixed
+	 */
+	public function inject_pos_order_item_inventories( $response, array $handler, \WP_REST_Request $request ) {
+		unset( $handler );
+
+		if ( ! $this->is_atum_mi_supported() ) {
+			return $response;
+		}
+
+		if ( ! $this->is_wcpos_order_write_request( $request ) ) {
+			return $response;
+		}
+
+		$store_id = (int) $request->get_param( 'store_id' );
+		if ( $store_id <= 0 ) {
+			return $response;
+		}
+
+		$location_term_id = (int) get_post_meta( $store_id, self::STORE_LOCATION_META_KEY, true );
+		if ( $location_term_id <= 0 ) {
+			return $response;
+		}
+
+		$line_items = $request->get_param( 'line_items' );
+		if ( ! is_array( $line_items ) ) {
+			return $response;
+		}
+
+		$changed = false;
+
+		foreach ( $line_items as $index => $line_item ) {
+			if ( ! is_array( $line_item ) || ! empty( $line_item['mi_inventories'] ) ) {
+				continue;
+			}
+
+			$product_id = absint( ! empty( $line_item['variation_id'] ) ? $line_item['variation_id'] : ( $line_item['product_id'] ?? 0 ) );
+			if ( $product_id <= 0 ) {
+				continue;
+			}
+
+			$quantity = $line_item['quantity'] ?? null;
+			if ( ! is_numeric( $quantity ) || (float) $quantity <= 0 ) {
+				continue;
+			}
+
+			$inventory = $this->get_inventory_for_product_at_location( $product_id, $location_term_id );
+			if ( null === $inventory || empty( $inventory['inventory_id'] ) ) {
+				continue;
+			}
+
+			$line_items[ $index ]['mi_inventories'] = array(
+				array(
+					'inventory_id' => (int) $inventory['inventory_id'],
+					'product_id'   => $product_id,
+					'qty'          => 0 + $quantity,
+				),
+			);
+			$changed                            = true;
+		}
+
+		if ( $changed ) {
+			$request->set_param( 'line_items', $line_items );
+		}
+
+		return $response;
 	}
 
 	/**
@@ -485,6 +564,21 @@ class Plugin {
 	 */
 	private function is_wcpos_route( \WP_REST_Request $request ): bool {
 		return 0 === strpos( $request->get_route(), '/wcpos/v1/' );
+	}
+
+	/**
+	 * Check if a request is creating/updating a POS order through wcpos/v1.
+	 *
+	 * @param \WP_REST_Request $request The current REST request.
+	 *
+	 * @return bool
+	 */
+	private function is_wcpos_order_write_request( \WP_REST_Request $request ): bool {
+		if ( 0 !== strpos( $request->get_route(), '/wcpos/v1/orders' ) ) {
+			return false;
+		}
+
+		return in_array( $request->get_method(), array( 'POST', 'PUT', 'PATCH' ), true );
 	}
 
 	/**
