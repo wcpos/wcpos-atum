@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WCPOS ATUM Integration
  * Description: ATUM Multi-Inventory integration for WCPOS, linking inventory locations to POS stores.
- * Version: 0.1.2
+ * Version: 0.1.3
  * Author: kilbot
  * Update URI:  https://github.com/wcpos/wcpos-atum
  * Requires Plugins: woocommerce, atum-stock-manager-for-woocommerce, atum-multi-inventory
@@ -17,7 +17,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-const VERSION = '0.1.2';
+const VERSION = '0.1.3';
 
 require_once __DIR__ . '/includes/class-plugin.php';
 

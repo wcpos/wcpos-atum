@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.3] - 2026-04-21
+
+### Changed
+- Add a GitHub `Update URI` header so WordPress can identify the plugin for custom update checks.
+- Bump the plugin version to `0.1.3` for the update metadata release.
+
 ## [0.1.2] - 2026-04-20
 
 ### Fixed
