@@ -1,0 +1,6 @@
+minimumReleaseAge: 1440
+minimumReleaseAgeIgnoreMissingTime: true
+blockExoticSubdeps: true
+
+allowBuilds:
+  fs-ext-extra-prebuilt: true
