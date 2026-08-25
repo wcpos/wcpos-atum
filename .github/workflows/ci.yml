@@ -97,14 +97,21 @@ jobs:
       - name: Install Node dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Prepare local dependency stubs
+      - name: Prepare local dependencies
         run: |
-          mkdir -p ../woocommerce-pos ../woocommerce-pos-pro ../atum-multi-inventory
+          mkdir -p ../woocommerce-pos-pro ../atum-multi-inventory
 
+          # The WCPOS free plugin is what this integration hooks into, so CI runs
+          # against the real wp.org release rather than a stub. A stub has neither
+          # wcpos_request() nor Sync\Store_Scope, so every sync-lane test would
+          # skip or fail and the gate would prove nothing (#14).
           if [ ! -f ../woocommerce-pos/woocommerce-pos.php ]; then
-            printf '%s\n' '<?php' '/**' ' * Plugin Name: WCPOS (Stub)' ' */' > ../woocommerce-pos/woocommerce-pos.php
+            curl -sSfL -o "${RUNNER_TEMP}/woocommerce-pos.zip" https://downloads.wordpress.org/plugin/woocommerce-pos.zip
+            unzip -q "${RUNNER_TEMP}/woocommerce-pos.zip" -d ..
           fi
 
+          # WCPOS Pro and ATUM Multi-Inventory are paid plugins with no public
+          # download. The suite drives their seams through filters, so stubs do.
           if [ ! -f ../woocommerce-pos-pro/woocommerce-pos-pro.php ]; then
             printf '%s\n' '<?php' '/**' ' * Plugin Name: WCPOS Pro (Stub)' ' */' > ../woocommerce-pos-pro/woocommerce-pos-pro.php
           fi

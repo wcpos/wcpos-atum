@@ -37,9 +37,12 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 	private function in_wcpos_v2_lane( callable $operation ) {
 		$store_scope = '\WCPOS\WooCommercePOS\Sync\Store_Scope';
 
-		if ( ! class_exists( $store_scope ) || ! is_callable( array( $store_scope, 'in_v2_lane' ) ) ) {
-			$this->markTestSkipped( 'WCPOS free plugin 1.10.0+ is required for the v2 sync lane.' );
-		}
+		// Deliberately a failure and not a skip: a silently skipped sync-lane test
+		// is exactly how this bug shipped unnoticed. CI installs the real plugin.
+		$this->assertTrue(
+			class_exists( $store_scope ) && is_callable( array( $store_scope, 'in_v2_lane' ) ),
+			'WCPOS free plugin 1.10.0+ must be installed to exercise the v2 sync lane.'
+		);
 
 		return call_user_func( array( $store_scope, 'in_v2_lane' ), $operation );
 	}
