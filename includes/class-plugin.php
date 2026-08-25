@@ -16,6 +16,17 @@ class Plugin {
 	public const STORE_SKU_OVERRIDE_KEY   = '_wcpos_atum_sku_override';
 
 	/**
+	 * WCPOS's v2 sync lane marker, absent on releases before 1.10.0.
+	 */
+	private const STORE_SCOPE_CLASS = '\\WCPOS\\WooCommercePOS\\Sync\\Store_Scope';
+
+	/**
+	 * The WooCommerce routes WCPOS's v2 push controller forwards writes to.
+	 */
+	private const WC_ORDERS_ROUTE   = '/wc/v3/orders';
+	private const WC_PRODUCTS_ROUTE = '/wc/v3/products';
+
+	/**
 	 * Singleton instance.
 	 *
 	 * @var self|null
@@ -95,8 +106,7 @@ class Plugin {
 			return $result;
 		}
 
-		$route = $request->get_route();
-		if ( 0 !== strpos( $route, '/wcpos/v1/stores' ) ) {
+		if ( ! $this->is_wcpos_versioned_route( $request, '/stores' ) ) {
 			return $result;
 		}
 
@@ -693,43 +703,156 @@ class Plugin {
 	}
 
 	/**
-	 * Check if request is a WCPOS route.
+	 * Check if a request is being served for the POS.
+	 *
+	 * ## Why this is not a route prefix check
+	 *
+	 * Up to WCPOS 1.9.x the till read the catalogue through `/wcpos/v1/products`,
+	 * so matching the route prefix was enough. The v2 sync lane introduced in
+	 * 1.10.0 never presents that route to this filter: reads are proxied to
+	 * `/wc/v3/products`, and each product/variation is serialized through a
+	 * request the sync engine builds in PHP, whose route is literally `/`. A
+	 * prefix check therefore matched nothing on v2 and every injection below
+	 * silently bailed — tills showed GLOBAL stock instead of the store
+	 * location's, and could sell inventory the location did not have.
+	 *
+	 * Three signals are accepted, and any one of them is enough. They are tested
+	 * cheapest first, because this runs once per serialized record:
+	 *
+	 * 1. The `wcpos/vN` namespace — a string match, and the whole of the v1 lane.
+	 * 2. `Store_Scope::is_v2_lane()` — an integer compare on a marker WCPOS
+	 *    raises for the duration of a v2 lane operation. Covers the proxied read
+	 *    and the bare `GET /` serialization, and keeps working on hosts that
+	 *    strip request headers, where the store scope arrives as a param.
+	 * 3. `wcpos_request()` — WCPOS's own helper, true for the whole PHP request
+	 *    whenever the `X-WCPOS` header or query var arrived. It rides internal
+	 *    re-dispatches, so it also catches POS traffic that reaches a WooCommerce
+	 *    route without the lane marker.
+	 *
+	 * Signals 2 and 3 are guarded so this plugin still loads, and still works on
+	 * the v1 lane, against WCPOS releases that predate them.
 	 *
 	 * @param \WP_REST_Request $request The current REST request.
 	 *
-	 * @return bool True if this is a WCPOS API route.
+	 * @return bool True if this response is being prepared for the POS.
 	 */
 	private function is_wcpos_route( \WP_REST_Request $request ): bool {
-		return 0 === strpos( $request->get_route(), '/wcpos/v1/' );
+		return $this->is_wcpos_versioned_route( $request, '/' )
+			|| $this->is_wcpos_sync_lane()
+			|| $this->is_pos_http_request();
 	}
 
 	/**
-	 * Check if a request is creating/updating a POS order through wcpos/v1.
+	 * Check if a request is creating/updating a POS order.
+	 *
+	 * ## Which request to match on v2
+	 *
+	 * A v2 order push arrives as `POST /wcpos/v2/push/orders` carrying a
+	 * mutation envelope, and the controller unwraps it and dispatches an inner
+	 * `POST|PUT /wc/v3/orders[/{id}]` through `rest_do_request()`. This filter
+	 * runs on `rest_request_before_callbacks`, which fires for BOTH — but only
+	 * the inner request has `line_items` as a readable param, so the outer
+	 * envelope is deliberately not matched.
+	 *
+	 * The v2 arm requires the sync lane marker rather than just the `X-WCPOS`
+	 * header. This helper REWRITES the request body, so it must fire only for
+	 * WCPOS's own forward, never for some other `/wc/v3/orders` write that
+	 * happens to originate from a browser tab with the POS header attached.
 	 *
 	 * @param \WP_REST_Request $request The current REST request.
 	 *
 	 * @return bool
 	 */
 	private function is_wcpos_order_write_request( \WP_REST_Request $request ): bool {
-		if ( 0 !== strpos( $request->get_route(), '/wcpos/v1/orders' ) ) {
+		if ( ! $this->is_write_method( $request ) ) {
 			return false;
 		}
 
-		return in_array( $request->get_method(), array( 'POST', 'PUT', 'PATCH' ), true );
+		if ( $this->is_wcpos_versioned_route( $request, '/orders' ) ) {
+			return true;
+		}
+
+		return $this->is_wcpos_sync_lane()
+			&& 0 === strpos( $request->get_route(), self::WC_ORDERS_ROUTE );
 	}
 
 	/**
-	 * Check if a request is updating a POS product or variation through wcpos/v1.
+	 * Check if a request is updating a POS product or variation.
+	 *
+	 * On v2 the inner dispatch is `PUT /wc/v3/products/{id}` for a product and
+	 * `PUT /wc/v3/products/{parent}/variations/{id}` for a variation, so the one
+	 * `/wc/v3/products` prefix covers both. As with orders, the v2 arm requires
+	 * the sync lane marker because this helper writes to ATUM's tables.
 	 *
 	 * @param \WP_REST_Request $request The current REST request.
 	 *
 	 * @return bool
 	 */
 	private function is_wcpos_product_write_request( \WP_REST_Request $request ): bool {
-		if ( 0 !== strpos( $request->get_route(), '/wcpos/v1/products' ) ) {
+		if ( ! $this->is_write_method( $request ) ) {
 			return false;
 		}
 
+		if ( $this->is_wcpos_versioned_route( $request, '/products' ) ) {
+			return true;
+		}
+
+		return $this->is_wcpos_sync_lane()
+			&& 0 === strpos( $request->get_route(), self::WC_PRODUCTS_ROUTE );
+	}
+
+	/**
+	 * Match a route against the WCPOS namespace at any API version.
+	 *
+	 * Matching `v\d+` rather than a hard-coded `v1` keeps a direct `wcpos/v2`
+	 * call — the stores service, for one, is served under both namespaces —
+	 * recognised without another release.
+	 *
+	 * @param \WP_REST_Request $request The current REST request.
+	 * @param string           $suffix  Route suffix to require, eg `/orders`.
+	 *
+	 * @return bool
+	 */
+	private function is_wcpos_versioned_route( \WP_REST_Request $request, string $suffix ): bool {
+		$pattern = '#^/wcpos/v\d+' . preg_quote( $suffix, '#' ) . '#';
+
+		return 1 === preg_match( $pattern, $request->get_route() );
+	}
+
+	/**
+	 * Whether the current PHP request was made by the POS.
+	 *
+	 * @return bool
+	 */
+	private function is_pos_http_request(): bool {
+		return \function_exists( 'wcpos_request' ) && wcpos_request();
+	}
+
+	/**
+	 * Whether a WCPOS v2 sync lane operation is currently in flight.
+	 *
+	 * @return bool
+	 */
+	private function is_wcpos_sync_lane(): bool {
+		if ( ! \class_exists( self::STORE_SCOPE_CLASS ) ) {
+			return false;
+		}
+
+		if ( ! \is_callable( array( self::STORE_SCOPE_CLASS, 'is_v2_lane' ) ) ) {
+			return false;
+		}
+
+		return (bool) \call_user_func( array( self::STORE_SCOPE_CLASS, 'is_v2_lane' ) );
+	}
+
+	/**
+	 * Whether a request uses a write method.
+	 *
+	 * @param \WP_REST_Request $request The current REST request.
+	 *
+	 * @return bool
+	 */
+	private function is_write_method( \WP_REST_Request $request ): bool {
 		return in_array( $request->get_method(), array( 'POST', 'PUT', 'PATCH' ), true );
 	}
 
