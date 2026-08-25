@@ -4,3 +4,4 @@ composer.lock
 /.worktrees/
 .phpunit.result.cache
 /dist/
+.wp-env.override.json

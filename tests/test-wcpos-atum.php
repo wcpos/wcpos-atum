@@ -12,8 +12,39 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 
 	public function tearDown(): void {
 		remove_all_filters( 'wcpos_atum_is_supported' );
+		unset( $_SERVER['HTTP_X_WCPOS'] );
+		if ( class_exists( '\WCPOS\WooCommercePOS\Sync\Store_Scope' ) ) {
+			\WCPOS\WooCommercePOS\Sync\Store_Scope::reset();
+		}
 		wp_set_current_user( 0 );
 		parent::tearDown();
+	}
+
+	/**
+	 * Mark the request as POS traffic the way a till's X-WCPOS header does.
+	 */
+	private function set_pos_request_header(): void {
+		$_SERVER['HTTP_X_WCPOS'] = '1';
+	}
+
+	/**
+	 * Run a callback inside WCPOS's v2 sync lane marker.
+	 *
+	 * @param callable $operation The operation to run.
+	 *
+	 * @return mixed
+	 */
+	private function in_wcpos_v2_lane( callable $operation ) {
+		$store_scope = '\WCPOS\WooCommercePOS\Sync\Store_Scope';
+
+		// Deliberately a failure and not a skip: a silently skipped sync-lane test
+		// is exactly how this bug shipped unnoticed. CI installs the real plugin.
+		$this->assertTrue(
+			class_exists( $store_scope ) && is_callable( array( $store_scope, 'in_v2_lane' ) ),
+			'WCPOS free plugin 1.10.0+ must be installed to exercise the v2 sync lane.'
+		);
+
+		return call_user_func( array( $store_scope, 'in_v2_lane' ), $operation );
 	}
 
 	public function test_is_atum_mi_supported_returns_false_without_atum(): void {
@@ -821,6 +852,370 @@ class Test_WCPOS_ATUM extends WP_UnitTestCase {
 		$line_items = $request->get_param( 'line_items' );
 
 		$this->assertSame( 789, $line_items[0]['mi_inventories'][0]['inventory_id'] );
+	}
+
+	// ---- v2 Sync Lane Tests ----
+	//
+	// WCPOS 1.10.0 moved the till onto the `wcpos/v2` sync lane, which never
+	// presents a `/wcpos/v1/...` route to these filters: catalogue reads are
+	// proxied to `/wc/v3/products`, each record is serialized through a request
+	// the sync engine builds in PHP with the bare route `/`, and a push is
+	// unwrapped into an inner `/wc/v3/...` dispatch. Every test below fails
+	// against the old route-prefix gates.
+
+	public function test_product_response_injects_stock_on_v2_sync_lane_with_bare_route(): void {
+		add_filter( 'wcpos_atum_is_supported', '__return_true' );
+		$this->create_atum_tables();
+		$this->register_atum_location_taxonomy();
+
+		$store_id         = $this->create_store_with_location( 'v2 Lane Store', 'v2 Lane Location' );
+		$location_term_id = (int) get_post_meta( $store_id, '_wcpos_atum_inventory_location', true );
+
+		$product_id = wp_insert_post(
+			array(
+				'post_type'   => 'product',
+				'post_status' => 'publish',
+				'post_title'  => 'v2 Lane Product',
+			)
+		);
+		$this->create_test_inventory( $product_id, $location_term_id, array( 'stock_quantity' => '3' ) );
+
+		$response = new WP_REST_Response(
+			array(
+				'id'             => $product_id,
+				'stock_quantity' => 100,
+				'stock_status'   => 'instock',
+			)
+		);
+
+		// Exactly what Product_Serializer hands the WooCommerce prepare filters:
+		// a bare `GET /` stamped with the store scope, inside the lane marker.
+		$request = new WP_REST_Request( 'GET', '/' );
+		$request->set_param( 'store_id', $store_id );
+
+		$plugin = \WCPOS\ATUM\Plugin::instance();
+		$result = $this->in_wcpos_v2_lane(
+			function () use ( $plugin, $response, $product_id, $request ) {
+				return $plugin->inject_atum_product_data( $response, $this->make_mock_product( $product_id ), $request );
+			}
+		);
+
+		$data = $result->get_data();
+
+		$this->assertSame( 3, $data['stock_quantity'] );
+		$this->assertSame( 'instock', $data['stock_status'] );
+	}
+
+	public function test_product_response_injects_zero_location_stock_on_v2_sync_lane(): void {
+		add_filter( 'wcpos_atum_is_supported', '__return_true' );
+		$this->create_atum_tables();
+		$this->register_atum_location_taxonomy();
+
+		$store_id         = $this->create_store_with_location( 'Empty Shelf Store', 'Empty Shelf Location' );
+		$location_term_id = (int) get_post_meta( $store_id, '_wcpos_atum_inventory_location', true );
+
+		$product_id = wp_insert_post(
+			array(
+				'post_type'   => 'product',
+				'post_status' => 'publish',
+				'post_title'  => 'Empty Shelf Product',
+			)
+		);
+		$this->create_test_inventory( $product_id, $location_term_id, array( 'stock_quantity' => '0' ) );
+
+		// The overselling case: 50 in stock globally, none at this location.
+		$response = new WP_REST_Response(
+			array(
+				'id'             => $product_id,
+				'stock_quantity' => 50,
+				'stock_status'   => 'instock',
+			)
+		);
+
+		$request = new WP_REST_Request( 'GET', '/' );
+		$request->set_param( 'store_id', $store_id );
+
+		$plugin = \WCPOS\ATUM\Plugin::instance();
+		$result = $this->in_wcpos_v2_lane(
+			function () use ( $plugin, $response, $product_id, $request ) {
+				return $plugin->inject_atum_product_data( $response, $this->make_mock_product( $product_id ), $request );
+			}
+		);
+
+		$data = $result->get_data();
+
+		$this->assertSame( 0, $data['stock_quantity'] );
+		$this->assertSame( 'outofstock', $data['stock_status'] );
+	}
+
+	public function test_product_response_injects_stock_for_proxied_wc_v3_route_with_pos_header(): void {
+		add_filter( 'wcpos_atum_is_supported', '__return_true' );
+		$this->create_atum_tables();
+		$this->register_atum_location_taxonomy();
+
+		$store_id         = $this->create_store_with_location( 'Proxy Store', 'Proxy Location' );
+		$location_term_id = (int) get_post_meta( $store_id, '_wcpos_atum_inventory_location', true );
+		update_post_meta( $store_id, '_wcpos_pricing_source', 'atum' );
+
+		$product_id = wp_insert_post(
+			array(
+				'post_type'   => 'product',
+				'post_status' => 'publish',
+				'post_title'  => 'Proxy Product',
+			)
+		);
+		$this->create_test_inventory(
+			$product_id,
+			$location_term_id,
+			array(
+				'stock_quantity' => '8',
+				'regular_price'  => '31.00',
+				'price'          => '31.00',
+			)
+		);
+
+		$response = new WP_REST_Response(
+			array(
+				'id'             => $product_id,
+				'stock_quantity' => 100,
+				'stock_status'   => 'instock',
+				'price'          => '29.99',
+				'regular_price'  => '29.99',
+				'sale_price'     => '',
+			)
+		);
+
+		// The catalog proxy forwards to wc/v3 inside the same PHP request, so the
+		// X-WCPOS header the till sent is still the signal that this is POS traffic.
+		$this->set_pos_request_header();
+
+		$request = new WP_REST_Request( 'GET', '/wc/v3/products' );
+		$request->set_param( 'store_id', $store_id );
+
+		$plugin = \WCPOS\ATUM\Plugin::instance();
+		$result = $plugin->inject_atum_product_data( $response, $this->make_mock_product( $product_id ), $request );
+		$data   = $result->get_data();
+
+		$this->assertSame( 8, $data['stock_quantity'] );
+		$this->assertSame( '31.00', $data['price'] );
+		$this->assertSame( '31.00', $data['regular_price'] );
+	}
+
+	public function test_pos_order_request_injects_mi_inventories_on_v2_push_forward(): void {
+		add_filter( 'wcpos_atum_is_supported', '__return_true' );
+		$this->create_atum_tables();
+		$this->register_atum_location_taxonomy();
+
+		$store_id         = $this->create_store_with_location( 'v2 Push Store', 'v2 Push Location' );
+		$location_term_id = (int) get_post_meta( $store_id, '_wcpos_atum_inventory_location', true );
+
+		$product_id = wp_insert_post(
+			array(
+				'post_type'   => 'product',
+				'post_status' => 'publish',
+				'post_title'  => 'v2 Push Product',
+			)
+		);
+		$inventory_id = $this->create_test_inventory( $product_id, $location_term_id, array( 'stock_quantity' => '7' ) );
+
+		// The push controller unwraps POST /wcpos/v2/push/orders and dispatches
+		// this inner request; rest_request_before_callbacks sees the inner one.
+		$request = new WP_REST_Request( 'POST', '/wc/v3/orders' );
+		$request->set_param( 'store_id', $store_id );
+		$request->set_param(
+			'line_items',
+			array(
+				array(
+					'product_id' => $product_id,
+					'quantity'   => 2,
+				),
+			)
+		);
+
+		$this->in_wcpos_v2_lane(
+			static function () use ( $request ) {
+				return apply_filters( 'rest_request_before_callbacks', null, array(), $request );
+			}
+		);
+
+		$line_items = $request->get_param( 'line_items' );
+
+		$this->assertSame(
+			array(
+				array(
+					'inventory_id' => $inventory_id,
+					'product_id'   => $product_id,
+					'qty'          => 2,
+				),
+			),
+			$line_items[0]['mi_inventories']
+		);
+	}
+
+	public function test_order_request_not_modified_for_wc_v3_route_outside_the_sync_lane(): void {
+		add_filter( 'wcpos_atum_is_supported', '__return_true' );
+		$this->create_atum_tables();
+		$this->register_atum_location_taxonomy();
+
+		$store_id         = $this->create_store_with_location( 'Bare wc/v3 Store', 'Bare wc/v3 Location' );
+		$location_term_id = (int) get_post_meta( $store_id, '_wcpos_atum_inventory_location', true );
+
+		$product_id = wp_insert_post(
+			array(
+				'post_type'   => 'product',
+				'post_status' => 'publish',
+				'post_title'  => 'Bare wc/v3 Product',
+			)
+		);
+		$this->create_test_inventory( $product_id, $location_term_id, array( 'stock_quantity' => '7' ) );
+
+		// A POS-header request that is NOT a sync forward must not have its order
+		// body rewritten — the write helpers deliberately require the lane marker.
+		$this->set_pos_request_header();
+
+		$request = new WP_REST_Request( 'POST', '/wc/v3/orders' );
+		$request->set_param( 'store_id', $store_id );
+		$request->set_param(
+			'line_items',
+			array(
+				array(
+					'product_id' => $product_id,
+					'quantity'   => 2,
+				),
+			)
+		);
+
+		apply_filters( 'rest_request_before_callbacks', null, array(), $request );
+
+		$line_items = $request->get_param( 'line_items' );
+
+		$this->assertArrayNotHasKey( 'mi_inventories', $line_items[0] );
+	}
+
+	public function test_pos_product_update_writes_to_atum_inventory_on_v2_push_forward(): void {
+		add_filter( 'wcpos_atum_is_supported', '__return_true' );
+		$this->create_atum_tables();
+		$this->register_atum_location_taxonomy();
+
+		$store_id         = $this->create_store_with_location( 'v2 Write Store', 'v2 Write Location' );
+		$location_term_id = (int) get_post_meta( $store_id, '_wcpos_atum_inventory_location', true );
+
+		$product = new \WC_Product_Simple();
+		$product->set_name( 'v2 Write Product' );
+		$product->set_regular_price( '10.00' );
+		$product->save();
+
+		$inventory_id = $this->create_test_inventory(
+			$product->get_id(),
+			$location_term_id,
+			array( 'stock_quantity' => '4' )
+		);
+
+		$request = new WP_REST_Request( 'PUT', '/wc/v3/products/' . $product->get_id() );
+		$request->set_param( 'store_id', $store_id );
+		$request->set_param( 'stock_quantity', 9 );
+
+		$this->in_wcpos_v2_lane(
+			static function () use ( $product, $request ) {
+				do_action( 'woocommerce_rest_insert_product_object', $product, $request, false );
+			}
+		);
+
+		$meta = $this->get_inventory_meta( $inventory_id );
+
+		$this->assertSame( '9', $meta['stock_quantity'] );
+	}
+
+	public function test_pos_variation_update_writes_to_atum_inventory_on_v2_push_forward(): void {
+		add_filter( 'wcpos_atum_is_supported', '__return_true' );
+		$this->create_atum_tables();
+		$this->register_atum_location_taxonomy();
+
+		$store_id         = $this->create_store_with_location( 'v2 Variation Store', 'v2 Variation Location' );
+		$location_term_id = (int) get_post_meta( $store_id, '_wcpos_atum_inventory_location', true );
+
+		$parent = new \WC_Product_Variable();
+		$parent->set_name( 'v2 Variable Parent' );
+		$parent->save();
+
+		$variation = new \WC_Product_Variation();
+		$variation->set_parent_id( $parent->get_id() );
+		$variation->set_regular_price( '10.00' );
+		$variation->save();
+
+		$inventory_id = $this->create_test_inventory(
+			$variation->get_id(),
+			$location_term_id,
+			array( 'stock_quantity' => '4' )
+		);
+
+		$request = new WP_REST_Request( 'PUT', '/wc/v3/products/' . $parent->get_id() . '/variations/' . $variation->get_id() );
+		$request->set_param( 'store_id', $store_id );
+		$request->set_param( 'stock_quantity', 6 );
+
+		$this->in_wcpos_v2_lane(
+			static function () use ( $variation, $request ) {
+				do_action( 'woocommerce_rest_insert_product_variation_object', $variation, $request, false );
+			}
+		);
+
+		$meta = $this->get_inventory_meta( $inventory_id );
+
+		$this->assertSame( '6', $meta['stock_quantity'] );
+	}
+
+	public function test_product_update_not_written_for_wc_v3_route_outside_the_sync_lane(): void {
+		add_filter( 'wcpos_atum_is_supported', '__return_true' );
+		$this->create_atum_tables();
+		$this->register_atum_location_taxonomy();
+
+		$store_id         = $this->create_store_with_location( 'Bare Write Store', 'Bare Write Location' );
+		$location_term_id = (int) get_post_meta( $store_id, '_wcpos_atum_inventory_location', true );
+
+		$product = new \WC_Product_Simple();
+		$product->set_name( 'Bare Write Product' );
+		$product->save();
+
+		$inventory_id = $this->create_test_inventory(
+			$product->get_id(),
+			$location_term_id,
+			array( 'stock_quantity' => '4' )
+		);
+
+		$this->set_pos_request_header();
+
+		$request = new WP_REST_Request( 'PUT', '/wc/v3/products/' . $product->get_id() );
+		$request->set_param( 'store_id', $store_id );
+		$request->set_param( 'stock_quantity', 9 );
+
+		do_action( 'woocommerce_rest_insert_product_object', $product, $request, false );
+
+		$meta = $this->get_inventory_meta( $inventory_id );
+
+		$this->assertSame( '4', $meta['stock_quantity'] );
+	}
+
+	public function test_store_response_includes_atum_fields_on_v2_stores_route(): void {
+		add_filter( 'wcpos_atum_is_supported', '__return_true' );
+
+		$store_id = wp_insert_post(
+			array(
+				'post_type'   => 'wcpos_store',
+				'post_status' => 'publish',
+				'post_title'  => 'v2 Stores Route Store',
+			)
+		);
+		update_post_meta( $store_id, '_wcpos_atum_inventory_location', 42 );
+		update_post_meta( $store_id, '_wcpos_pricing_source', 'atum' );
+
+		$request  = new WP_REST_Request( 'GET', '/wcpos/v2/stores/' . $store_id );
+		$response = new WP_REST_Response( array( 'id' => $store_id ) );
+
+		$result = apply_filters( 'rest_post_dispatch', $response, rest_get_server(), $request );
+		$data   = $result->get_data();
+
+		$this->assertSame( 42, $data['atum_inventory_location'] );
+		$this->assertSame( 'atum', $data['pricing_source'] );
 	}
 
 	// ---- Store Response Defaults Test ----
