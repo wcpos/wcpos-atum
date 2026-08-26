@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.4] - 2026-08-26
+
+### Fixed
+- **Per-location stock and prices reach the POS again on WCPOS 1.10.x.** The integration recognised only the `wcpos/v1` REST namespace, so on the v2 sync lane every injection ran and silently declined — tills showed **global** stock instead of the location's, which could allow overselling. Detection now covers the v2 lane (proxied `/wc/v3` reads, the serialized request, and the push write route) while `wcpos/v1` keeps working unchanged.
+
+### Changed
+- CI installs the real WordPress.org WCPOS release instead of a header-only stub, so the v2 tests actually execute rather than skipping.
+
 ## [0.1.3] - 2026-04-21
 
 ### Changed
